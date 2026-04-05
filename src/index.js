@@ -253,9 +253,16 @@ function calcModeScores(answers) {
 }
 
 const db = {
-  key:(email,k)=>`mos_${email.toLowerCase().replace(/[^a-z0-9]/g,"_")}_${k}`,
-  async get(email,k){ try{ const r=await window.storage.get(db.key(email,k)); return r?JSON.parse(r.value):null; }catch{ return null; } },
-  async set(email,k,v){ try{ await window.storage.set(db.key(email,k),JSON.stringify(v)); }catch{} },
+  key: (email, k) => `mos_${email.toLowerCase().replace(/[^a-z0-9]/g,"_")}_${k}`,
+  async get(email, k) {
+    try {
+      const val = localStorage.getItem(db.key(email, k));
+      return val ? JSON.parse(val) : null;
+    } catch { return null; }
+  },
+  async set(email, k, v) {
+    try { localStorage.setItem(db.key(email, k), JSON.stringify(v)); } catch {}
+  },
 };
 
 async function fetchStrategy(profile, modeId) {
@@ -347,7 +354,26 @@ async function fetchStrategy(profile, modeId) {
   return JSON.parse((data.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim());
 }
 
-function weekKey(){ const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()); return d.toISOString().slice(0,10); }
+// Pick the best focus lane locally when AI hasn't responded yet
+function localFocusLane(profile, modeId) {
+  const lanes = (profile.lanes||[]).map(id => getLane(id, profile.customLanes));
+  if (!lanes.length) return null;
+  // For each mode, pick the most contextually relevant lane type
+  const preferredOrder = {
+    build:     ["founder","business","sideproject","creative","freelance","content","creator"],
+    stabilize: ["business","freelance","consulting","career","founder","sideproject"],
+    pivot:     ["creative","content","creator","learning","sideproject","founder"],
+    focus:     ["founder","business","freelance","consulting","creator","content"],
+    expand:    ["content","creator","business","founder","consulting","freelance"],
+    refine:    ["creative","content","creator","founder","business","consulting"],
+    rest:      ["personal","learning","creative","content"],
+  }[modeId] || [];
+  for (const preferred of preferredOrder) {
+    const match = lanes.find(l => l.id === preferred);
+    if (match) return match;
+  }
+  return lanes[0]; // fallback to first
+}
 function daysLeft(){ const n=new Date(),nx=new Date(n); nx.setDate(n.getDate()+(7-n.getDay())); nx.setHours(0,0,0,0); return Math.ceil((nx-n)/86400000); }
 function fmtTime(s){ const m=Math.floor(s/60),sc=s%60; return m+":"+(sc<10?"0":"")+sc; }
 function parseMin(str){ const m=(str||"").match(/(\d+)/); return m?parseInt(m[1]):15; }
@@ -692,7 +718,7 @@ function Wizard({ init={}, onDone, onCancel }) {
   if(s===1) return (
     <div style={pg}><StepBar n={1} total={TOTAL}/><SL ch={`Step 1 of ${TOTAL}`}/>
       <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:40, fontWeight:300, marginBottom:6 }}>Who are you?</h2>
-      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>All of it. Not just the job title.</p>
+      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Your name and how you describe what you do.</p>
       <div style={{ marginBottom:18 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Name</p><input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Sofía" style={INP}/></div>
       <div style={{ marginBottom:40 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Identity</p><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Brand Strategist / Creative Director / Founder" style={INP}/><p style={{ fontSize:11, color:T.muted, marginTop:7 }}>Separate with  /  — embrace the slash</p></div>
       <div style={{ display:"flex", gap:10 }}>{onCancel&&<Btn variant="ghost" onClick={onCancel}>Cancel</Btn>}<div style={{ flex:1 }}><Btn onClick={()=>setS(2)} disabled={!name.trim()} full>Continue →</Btn></div></div>
@@ -849,27 +875,31 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
       {/* 3. FOCUS LANE — decision made */}
       <div style={{ margin:"10px 20px 0", background:"#fff", border:`2px solid ${T.tintBorder}`, borderRadius:12, padding:"16px 18px", boxShadow:T.shMd }}>
         <p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:10, fontWeight:700 }}>→ Focus Lane This Week</p>
-        {strategy?.focusLane ? (
-          <>
-            {(() => {
-              const fl = LANE_PRESETS.find(l=>l.label===strategy.focusLane)
-                || (profile.customLanes||[]).find(l=>l.label===strategy.focusLane)
-                || { id:"fl", label:strategy.focusLane, emoji:"✦" };
-              return <LaneBar lane={fl} state="focus"/>;
-            })()}
-            <p style={{ fontSize:12, color:T.sub, lineHeight:1.6, marginTop:10 }}>{strategy.focusLaneReason}</p>
-            <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:10 }}>
-              <div style={{ width:3, height:32, background:T.inkSoft, borderRadius:2, flexShrink:0 }}/>
-              <p style={{ fontSize:12, color:T.inkWarm, fontWeight:600, lineHeight:1.6 }}>
-                This is your priority this week. Everything else is secondary.
-              </p>
+        {(() => {
+          const focusName = strategy?.focusLane || localFocusLane(profile, profile.modeId)?.label;
+          if (!focusName) return (
+            <div style={{ background:T.tint, borderRadius:8, padding:"10px 14px" }}>
+              <p style={{ fontSize:13, color:T.inkSoft, fontStyle:"italic" }}>Add your lanes to get a focus recommendation</p>
             </div>
-          </>
-        ) : (
-          <div style={{ background:T.tint, borderRadius:8, padding:"10px 14px" }}>
-            <p style={{ fontSize:13, color:T.inkSoft, fontStyle:"italic" }}>{stratLoading ? "Analysing your portfolio..." : "Determining your focus lane..."}</p>
-          </div>
-        )}
+          );
+          const fl = LANE_PRESETS.find(l=>l.label===focusName)
+            || (profile.customLanes||[]).find(l=>l.label===focusName)
+            || { id:"fl", label:focusName, emoji:"✦" };
+          return (
+            <>
+              <LaneBar lane={fl} state="focus"/>
+              {strategy?.focusLaneReason && (
+                <p style={{ fontSize:12, color:T.sub, lineHeight:1.6, marginTop:10 }}>{strategy.focusLaneReason}</p>
+              )}
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:10 }}>
+                <div style={{ width:3, height:32, background:T.inkSoft, borderRadius:2, flexShrink:0 }}/>
+                <p style={{ fontSize:12, color:T.inkWarm, fontWeight:600, lineHeight:1.6 }}>
+                  This is your priority this week. Everything else is secondary.
+                </p>
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       {/* 4. STOP DOING */}
@@ -1286,8 +1316,8 @@ export default function App() {
   useEffect(() => {
     (async()=>{
       try {
-        const saved = await window.storage.get("mos_last_email");
-        if(saved?.value){ const e=JSON.parse(saved.value); await loadUserData(e); }
+        const saved = localStorage.getItem("mos_last_email");
+        if(saved){ const e=JSON.parse(saved); await loadUserData(e); }
         else setAppState("intro");
       } catch { setAppState("intro"); }
     })();
@@ -1303,7 +1333,7 @@ export default function App() {
   };
 
   const handleLogin = async (e) => {
-    try { await window.storage.set("mos_last_email",JSON.stringify(e)); } catch {}
+    try { localStorage.setItem("mos_last_email", JSON.stringify(e)); } catch {}
     try { await loadUserData(e); } catch { setEmail(e); setAppState("onboarding"); }
   };
 
