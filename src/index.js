@@ -1292,7 +1292,10 @@ export default function App() {
   const [appState, setAppState] = useState("loading");
   const [email, setEmail] = useState(null);
   const [tab, setTab] = useState("dashboard");
-  const [profile, setProfile] = useState(null);
+  const [profile, setProfile] = useState(() => {
+  const saved = localStorage.getItem('mode_user_profile');
+  return saved ? JSON.parse(saved) : null;
+});
   const [history, setHistory] = useState([]);
   const [weekHistory, setWeekHistory] = useState([]);
   const [weekData, setWeekData] = useState(null);
@@ -1360,13 +1363,39 @@ export default function App() {
     await db.set(email,"week",resolved); setWeekData(resolved);
   };
 
-  const onboard=async data=>{
-    const p={name:data.name,title:data.title,skills:data.skills,lanes:data.lanes,customLanes:data.customLanes,activeLanes:data.lanes,modeId:data.modeId,answers:data.answers,focusStyle:data.focusStyle};
-    const h=[{date:new Date().toISOString(),modeId:data.modeId}];
-    const w={week:weekKey(),tasks:[]};
-    await saveProfile(p); await saveHistory(h); await db.set(email,"week",w); setWeekData(w);
-    setAppState("app"); setStratKey(k=>k+1);
+  const onboard = async (data) => {
+  const p = {
+    name: data.name,
+    title: data.title,
+    skills: data.skills,
+    lanes: data.lanes,
+    customLanes: data.customLanes,
+    activeLanes: data.lanes,
+    modeId: data.modeId,
+    answers: data.answers,
+    focusStyle: data.focusStyle,
+    // This ensures the AI's lane is included in the profile
+    focusLane: data.focusLane 
   };
+
+  const h = [{ date: new Date().toISOString(), modeId: data.modeId }];
+  const w = { week: weekKey(), tasks: [] };
+
+  // 1. Save to your backend database
+  await saveProfile(p); 
+  await saveHistory(h); 
+  await db.set(email, "week", w); 
+
+  // 2. ADD THIS: Save to the browser's local memory (The "Memory" Fix)
+  localStorage.setItem('mode_user_profile', JSON.stringify(p));
+
+  // 3. Update the app state
+  setWeekData(w);
+  setProfile(p); // Make sure this is here so the UI updates immediately
+  setAppState("app"); 
+  setStratKey(k => k + 1);
+};
+
 
   const switchMode=async({modeId,answers})=>{
     const updated={...profile,modeId,answers};
