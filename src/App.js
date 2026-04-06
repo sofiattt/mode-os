@@ -370,8 +370,42 @@ function wkLabel(iso){ return new Date(iso).toLocaleDateString(“en-US”,{mont
 const INP = { background:”#fff”, border:`1px solid #E0D8CE`, borderRadius:6, padding:“13px 16px”, fontSize:14, color:”#0F0C0A”, fontFamily:”‘DM Sans’,sans-serif”, outline:“none”, width:“100%” };
 
 function Btn({ children, onClick, variant=“dark”, disabled, full, sm }) {
-const v={dark:{bg:disabled?”#E0D8CE”:”#0F0C0A”,cl:disabled?”#A09080”:”#FAF7F4”,bd:“none”,sh:disabled?“none”:“0 2px 8px rgba(15,12,10,0.22)”},ghost:{bg:“transparent”,cl:”#5C4F44”,bd:`1px solid #E0D8CE`,sh:“none”},soft:{bg:”#FBF0E4”,cl:”#6B3E1E”,bd:`1px solid #E2BC96`,sh:“none”},white:{bg:”#fff”,cl:”#0F0C0A”,bd:“none”,sh:“0 2px 8px rgba(15,12,10,0.1)”}}[variant]||{};
-return <button onClick={disabled?undefined:onClick} style={{ fontFamily:”‘DM Sans’,sans-serif”, cursor:disabled?“not-allowed”:“pointer”, borderRadius:4, fontSize:sm?10:11, letterSpacing:“1.6px”, textTransform:“uppercase”, fontWeight:500, background:v.bg, color:v.cl, border:v.bd, padding:sm?“8px 14px”:“13px 24px”, width:full?“100%”:“auto”, boxShadow:v.sh, transition:“all 0.15s” }}>{children}</button>;
+const v={
+dark:  { bg:disabled?”#E0D8CE”:”#0F0C0A”, cl:disabled?”#A09080”:”#FAF7F4”, bd:“none”, sh:disabled?“none”:“0 2px 8px rgba(15,12,10,0.22)” },
+ghost: { bg:“transparent”, cl:”#5C4F44”, bd:“1px solid #E0D8CE”, sh:“none” },
+soft:  { bg:”#FBF0E4”, cl:”#6B3E1E”, bd:“1px solid #E2BC96”, sh:“none” },
+white: { bg:”#fff”, cl:”#0F0C0A”, bd:“none”, sh:“0 2px 8px rgba(15,12,10,0.1)” },
+}[variant] || {};
+const handleClick = (e) => {
+e.preventDefault();
+if (!disabled && onClick) onClick(e);
+};
+return (
+<button
+type=“button”
+onPointerUp={handleClick}
+style={{
+fontFamily:”‘DM Sans’,sans-serif”,
+cursor: disabled ? “not-allowed” : “pointer”,
+borderRadius: 4,
+fontSize: sm ? 10 : 11,
+letterSpacing: “1.6px”,
+textTransform: “uppercase”,
+fontWeight: 500,
+background: v.bg,
+color: v.cl,
+border: v.bd,
+padding: sm ? “8px 14px” : “13px 24px”,
+width: full ? “100%” : “auto”,
+boxShadow: v.sh,
+transition: “all 0.15s”,
+WebkitTapHighlightColor: “transparent”,
+userSelect: “none”,
+touchAction: “manipulation”,
+minHeight: sm ? 36 : 48,
+}}
+>{children}</button>
+);
 }
 function SL({ ch, color }) { return <p style={{ fontSize:9, letterSpacing:4, color:color||T.inkSoft, textTransform:“uppercase”, marginBottom:8 }}>{ch}</p>; }
 function StepBar({ n, total }) { return <div style={{ display:“flex”, gap:6, marginBottom:32 }}>{Array.from({length:total},(_,i)=><div key={i} style={{ flex:1, height:2, borderRadius:1, background:i<n?T.inkSoft:T.border, transition:“background 0.4s” }}/>)}</div>; }
@@ -417,17 +451,19 @@ return (
 }
 
 function SoftLogin({ onLogin }) {
-const [email, setEmail] = useState(””);
+const savedEmail = (() => { try { const s=localStorage.getItem(“mos_last_email”); return s?JSON.parse(s):””; } catch { return “”; } })();
+const [email, setEmail] = useState(savedEmail);
 const [loading, setLoading] = useState(false);
 const [confirming, setConfirming] = useState(false);
 const [isReturning, setIsReturning] = useState(null);
 
 const handle = async () => {
 const e = email.trim().toLowerCase();
-if (!e||!e.includes(”@”)) return;
+if (!e || !e.includes(”@”)) return;
 setLoading(true);
-try { const ex=await db.get(e,“profile”); setIsReturning(!!ex); } catch { setIsReturning(false); }
-setConfirming(true); setLoading(false);
+try { const ex = await db.get(e, “profile”); setIsReturning(!!ex); } catch { setIsReturning(false); }
+setConfirming(true);
+setLoading(false);
 onLogin(e);
 };
 
@@ -439,18 +475,41 @@ return (
 <p style={{ fontSize:11, color:T.muted, marginBottom:40, marginTop:4, letterSpacing:1 }}>Your career OS</p>
 {!confirming ? (
 <>
-<h2 style={{ fontFamily:”‘Cormorant Garamond’,serif”, fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>Your email.</h2>
-<p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Returning? Your profile loads automatically. New here? You’ll set up your profile next.</p>
-<input value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key===“Enter”&&handle()} placeholder=“your@email.com” type=“email” autoCapitalize=“none” style={{ …INP, marginBottom:12, fontSize:16 }} />
-<Btn onClick={handle} disabled={!email.includes(”@”)||loading} full>{loading?“Checking…”:“Continue →”}</Btn>
+<h2 style={{ fontFamily:”‘Cormorant Garamond’,serif”, fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>{savedEmail ? “Welcome back.” : “Your email.”}</h2>
+<p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>{savedEmail ? “Your profile will load automatically.” : “Returning? Your profile loads automatically. New here? You’ll set up your profile next.”}</p>
+<input
+value={email}
+onChange={e => setEmail(e.target.value)}
+onKeyDown={e => e.key===“Enter” && handle()}
+placeholder=“your@email.com”
+type=“email”
+autoCapitalize=“none”
+autoComplete=“email”
+style={{ …INP, marginBottom:12, fontSize:16 }}
+/>
+<button
+type=“button”
+onPointerUp={() => handle()}
+disabled={!email.includes(”@”) || loading}
+style={{
+width:“100%”, background:(!email.includes(”@”)||loading)?”#E0D8CE”:”#0F0C0A”,
+color:(!email.includes(”@”)||loading)?”#A09080”:”#FAF7F4”,
+border:“none”, borderRadius:4, padding:“15px 24px”,
+fontSize:11, letterSpacing:“1.6px”, textTransform:“uppercase”, fontWeight:500,
+cursor:(!email.includes(”@”)||loading)?“not-allowed”:“pointer”,
+fontFamily:”‘DM Sans’,sans-serif”,
+boxShadow:(!email.includes(”@”)||loading)?“none”:“0 2px 8px rgba(15,12,10,0.22)”,
+minHeight:50, WebkitTapHighlightColor:“transparent”, touchAction:“manipulation”,
+}}
+>{loading ? “Checking…” : “Continue →”}</button>
 <p style={{ fontSize:11, color:T.muted, textAlign:“center”, marginTop:16, lineHeight:1.7 }}>No password. Data saved to this device.</p>
 </>
 ) : (
 <div style={{ textAlign:“center” }}>
 <p style={{ fontFamily:”‘Cormorant Garamond’,serif”, fontSize:40, fontWeight:300, color:T.ink, marginBottom:16 }}>✓</p>
-<h2 style={{ fontFamily:”‘Cormorant Garamond’,serif”, fontSize:28, fontWeight:300, color:T.ink, marginBottom:8 }}>{isReturning?“Welcome back.”:“Welcome.”}</h2>
+<h2 style={{ fontFamily:”‘Cormorant Garamond’,serif”, fontSize:28, fontWeight:300, color:T.ink, marginBottom:8 }}>{isReturning ? “Welcome back.” : “Welcome.”}</h2>
 <p style={{ fontSize:14, color:T.sub, marginBottom:6 }}>{email}</p>
-<p style={{ fontSize:13, color:T.muted }}>{isReturning?“Loading your profile, tasks, and history.”:“You’re new here — setting up your profile next.”}</p>
+<p style={{ fontSize:13, color:T.muted }}>{isReturning ? “Loading your profile, tasks, and history.” : “Setting up your profile next.”}</p>
 </div>
 )}
 </div>
@@ -1323,13 +1382,8 @@ document.head.appendChild(s);
 }, []);
 
 useEffect(() => {
-(async()=>{
-try {
-const saved = localStorage.getItem(“mos_last_email”);
-if(saved){ const e=JSON.parse(saved); await loadUserData(e); }
-else setAppState(“intro”);
-} catch { setAppState(“intro”); }
-})();
+// Always show intro first — returning users get email pre-filled at login step
+setAppState(“intro”);
 }, []);
 
 const loadUserData = async (e) => {
@@ -1369,52 +1423,37 @@ const resolved = typeof w === “function” ? w(weekData) : w;
 await db.set(email,“week”,resolved); setWeekData(resolved);
 };
 
-const onboard = async (data) => {
-  try {
-    const safeMode = data.modeId || "build";
-    const p = {
-      name: data.name,
-      title: data.title,
-      skills: data.skills || [],
-      lanes: data.lanes || [],
-      customLanes: data.customLanes || [],
-      activeLanes: data.lanes || [],
-      modeId: safeMode,
-      answers: data.answers || {},
-      focusStyle: data.focusStyle || "deep",
-      focusLane: data.focusLane
-    };
-
-    const h = [{ date: new Date().toISOString(), modeId: safeMode }];
-    const w = { week: weekKey(), tasks: [] };
-
-    // 1. Save to Browser Memory (Instant)
-    localStorage.setItem("mode_user_profile", JSON.stringify(p));
-
-    // 2. Database Sync
-    const currentEmail = email || localStorage.getItem("mos_last_email")?.replace(/"/g, "");
-    if (currentEmail) {
-      try {
-        await db.set(currentEmail, "profile", p);
-        await db.set(currentEmail, "history", h);
-        await db.set(currentEmail, "week", w);
-        setEmail(currentEmail);
-      } catch (dbErr) {
-        console.warn("Database sync delayed, using local cache.");
-      }
-    }
-
-    // 3. Enter the OS
-    setProfile(p);
-    setHistory(h);
-    setWeekData(w);
-    setAppState("app");
-    setStratKey(k => k + 1);
-
-  } catch (err) {
-    console.error("Onboard error:", err);
-    setAppState("app"); // Emergency entry
-  }
+const onboard = async data => {
+const safeMode = data.modeId || calcMode(
+Object.entries(data.answers||{}).map(([qId,optIdx])=>({qId,optIdx:Number(optIdx)}))
+) || “build”;
+const p = {
+name: data.name||””, title: data.title||””, skills: data.skills||[],
+lanes: data.lanes||[], customLanes: data.customLanes||[],
+activeLanes: data.lanes||[], modeId: safeMode,
+answers: data.answers||{}, focusStyle: data.focusStyle||“deep”,
+};
+const h = [{ date: new Date().toISOString(), modeId: safeMode }];
+const w = { week: weekKey(), tasks: [] };
+// Resolve email from state or localStorage
+let activeEmail = email;
+if (!activeEmail) {
+try { const s = localStorage.getItem(“mos_last_email”); activeEmail = s ? JSON.parse(s) : null; } catch {}
+}
+if (activeEmail) {
+try {
+localStorage.setItem(db.key(activeEmail,“profile”), JSON.stringify(p));
+localStorage.setItem(db.key(activeEmail,“history”), JSON.stringify(h));
+localStorage.setItem(db.key(activeEmail,“week”), JSON.stringify(w));
+localStorage.setItem(“mos_last_email”, JSON.stringify(activeEmail));
+} catch(e) { console.warn(“Save failed:”, e); }
+setEmail(activeEmail);
+}
+setProfile(p);
+setHistory(h);
+setWeekData(w);
+setAppState(“app”);
+setStratKey(k => k + 1);
 };
 
 const switchMode=async({modeId,answers})=>{
