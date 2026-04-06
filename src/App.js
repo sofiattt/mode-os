@@ -1369,36 +1369,52 @@ const resolved = typeof w === “function” ? w(weekData) : w;
 await db.set(email,“week”,resolved); setWeekData(resolved);
 };
 
-const onboard = async data => {
-try {
-const safeMode = data.modeId || calcMode(
-Object.entries(data.answers||{}).map(([qId,optIdx])=>({qId,optIdx:Number(optIdx)}))
-) || “build”;
-const p = {
-name: data.name, title: data.title, skills: data.skills,
-lanes: data.lanes||[], customLanes: data.customLanes||[],
-activeLanes: data.lanes||[], modeId: safeMode,
-answers: data.answers||{}, focusStyle: data.focusStyle||“deep”
-};
-const h = [{ date:new Date().toISOString(), modeId:safeMode }];
-const w = { week:weekKey(), tasks:[] };
-// Ensure email is set before saving
-const currentEmail = email || localStorage.getItem(“mos_last_email”)?.replace(/”/g,””);
-if (currentEmail) {
-await db.set(currentEmail,“profile”,p);
-await db.set(currentEmail,“history”,h);
-await db.set(currentEmail,“week”,w);
-setEmail(currentEmail);
-}
-setProfile(p); setHistory(h); setWeekData(w);
-setAppState(“app”); setStratKey(k=>k+1);
-} catch(err) {
-console.error(“Onboard error:”, err);
-// Still navigate even if save failed
-const safeMode = data.modeId || “build”;
-setProfile({ name:data.name, title:data.title, skills:data.skills||[], lanes:data.lanes||[], customLanes:data.customLanes||[], activeLanes:data.lanes||[], modeId:safeMode, answers:data.answers||{}, focusStyle:data.focusStyle||“deep” });
-setAppState(“app”); setStratKey(k=>k+1);
-}
+const onboard = async (data) => {
+  try {
+    const safeMode = data.modeId || "build";
+    const p = {
+      name: data.name,
+      title: data.title,
+      skills: data.skills || [],
+      lanes: data.lanes || [],
+      customLanes: data.customLanes || [],
+      activeLanes: data.lanes || [],
+      modeId: safeMode,
+      answers: data.answers || {},
+      focusStyle: data.focusStyle || "deep",
+      focusLane: data.focusLane
+    };
+
+    const h = [{ date: new Date().toISOString(), modeId: safeMode }];
+    const w = { week: weekKey(), tasks: [] };
+
+    // 1. Save to Browser Memory (Instant)
+    localStorage.setItem("mode_user_profile", JSON.stringify(p));
+
+    // 2. Database Sync
+    const currentEmail = email || localStorage.getItem("mos_last_email")?.replace(/"/g, "");
+    if (currentEmail) {
+      try {
+        await db.set(currentEmail, "profile", p);
+        await db.set(currentEmail, "history", h);
+        await db.set(currentEmail, "week", w);
+        setEmail(currentEmail);
+      } catch (dbErr) {
+        console.warn("Database sync delayed, using local cache.");
+      }
+    }
+
+    // 3. Enter the OS
+    setProfile(p);
+    setHistory(h);
+    setWeekData(w);
+    setAppState("app");
+    setStratKey(k => k + 1);
+
+  } catch (err) {
+    console.error("Onboard error:", err);
+    setAppState("app"); // Emergency entry
+  }
 };
 
 const switchMode=async({modeId,answers})=>{
