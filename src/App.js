@@ -86,7 +86,7 @@ flexShrink: 0,
 }}/>
 )}
 </div>
-  
+
 ```
   {/* Emoji + Label */}
   <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>{lane.emoji}</span>
