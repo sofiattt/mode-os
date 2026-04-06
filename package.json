@@ -8,7 +8,7 @@
     "react-scripts": "5.0.1",
     "lucide-react": "latest",
     "web-vitals": "^2.1.4",
-    "@vercel/analytics": "latest"
+    "@vercel/analytics": "^1.2.2"
   },
   "scripts": {
     "start": "react-scripts start",
