@@ -86,7 +86,6 @@ flexShrink: 0,
 }}/>
 )}
 </div>
-
   
 ```
   {/* Emoji + Label */}
