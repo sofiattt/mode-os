@@ -265,12 +265,96 @@ const db = {
   },
 };
 
-async function fetchStrategy(profile, modeId) {
+// ─── PATTERN INTELLIGENCE ─────────────────────────────────────────────────────
+function analysePatterns(history, weekHistory, currentModeId) {
+  const insights = [];
+  const modeCount = {};
+  const completionRates = [];
+
+  // Count mode frequency
+  history.forEach(h => {
+    modeCount[h.modeId] = (modeCount[h.modeId] || 0) + 1;
+  });
+
+  // Streak detection — how many consecutive weeks in current mode
+  const recent = [...history].reverse();
+  let streak = 0;
+  for (const h of recent) {
+    if (h.modeId === currentModeId) streak++;
+    else break;
+  }
+
+  // Completion pattern from weekHistory
+  weekHistory.forEach(w => {
+    if (w.total > 0) completionRates.push(w.done / w.total);
+  });
+  const avgCompletion = completionRates.length
+    ? Math.round((completionRates.reduce((a,b) => a+b, 0) / completionRates.length) * 100)
+    : null;
+  const lastRate = completionRates.length ? Math.round(completionRates[completionRates.length-1] * 100) : null;
+
+  // Avoidance detection — modes never used
+  const usedModes = Object.keys(modeCount);
+  const neverUsed = Object.keys(MODES).filter(m => !usedModes.includes(m) && m !== currentModeId);
+
+  // Patterns we surface
+  if (streak >= 3) {
+    insights.push(`${streak} consecutive weeks in ${MODES[currentModeId]?.label || currentModeId}`);
+  }
+  if (streak >= 6) {
+    insights.push(`You may be stuck — ${streak} weeks without a mode shift`);
+  }
+  if (avgCompletion !== null) {
+    if (avgCompletion >= 75) insights.push(`Strong follow-through — ${avgCompletion}% average task completion`);
+    else if (avgCompletion < 40) insights.push(`Tasks are not being completed — only ${avgCompletion}% average completion`);
+  }
+  if (lastRate !== null && avgCompletion !== null) {
+    if (lastRate > avgCompletion + 20) insights.push("Last week was your best completion rate yet");
+    if (lastRate < avgCompletion - 20) insights.push("Last week was a low follow-through week");
+  }
+  const mostUsed = Object.entries(modeCount).sort((a,b) => b[1]-a[1])[0];
+  if (mostUsed && modeCount[mostUsed[0]] >= 3 && mostUsed[0] !== currentModeId) {
+    insights.push(`You default to ${MODES[mostUsed[0]]?.label} — you've been there ${mostUsed[1]} times`);
+  }
+  if (neverUsed.includes("rest") && history.length >= 4) {
+    insights.push("You have never taken a Rest Mode week in your entire history");
+  }
+  if (neverUsed.includes("pivot") && history.length >= 6) {
+    insights.push("You have never entered Pivot Mode — you may be forcing something that needs to shift");
+  }
+
+  return {
+    streak,
+    avgCompletion,
+    lastRate,
+    insights,
+    totalWeeks: history.length,
+    modeCount,
+    dominantMode: mostUsed?.[0] || currentModeId,
+  };
+}
+
+// Build a memory context string to pass to the AI
+function buildMemoryContext(patterns) {
+  if (!patterns || patterns.totalWeeks < 2) return "No historical data yet — this is an early week.";
+  const lines = [
+    `Total weeks tracked: ${patterns.totalWeeks}`,
+    patterns.streak > 1 ? `Current mode streak: ${patterns.streak} consecutive weeks` : null,
+    patterns.avgCompletion !== null ? `Average task completion: ${patterns.avgCompletion}%` : null,
+    patterns.lastRate !== null ? `Last week completion: ${patterns.lastRate}%` : null,
+    ...patterns.insights,
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+async function fetchStrategy(profile, modeId, patterns) {
   const mode = MODES[modeId]||MODES.build;
   const isLight = profile.focusStyle==="light";
   const laneLabels = (profile.lanes||[]).map(id=>getLane(id,profile.customLanes).label);
   const taskCount = isLight ? 4 : 5;
   const taskTime = isLight ? "10–15 min" : "30–90 min";
+  const memoryContext = buildMemoryContext(patterns);
+  const hasHistory = patterns && patterns.totalWeeks >= 2;
 
   // Reconstruct what the user actually answered
   const answerSummary = profile.answers
@@ -298,7 +382,7 @@ async function fetchStrategy(profile, modeId) {
     : `DEEP FOCUS — exactly ${taskCount} tasks. Each 30–90 min. Specific, commanding, strategic. Verb-first. Reference their lanes and skills.`;
 
   const prompt = [
-    `You are an opinionated career strategist for multi-passionate creatives. You have reviewed this person's situation and you have already made the decisions. You are delivering those decisions now.`,
+    `You are an opinionated career strategist for multi-passionate creatives. You have reviewed this person's full history and you have already made the decisions. You are delivering those decisions now.`,
     ``,
     `RULES — non-negotiable:`,
     `- Never say "you could" or "you might" or "consider" or "perhaps" or "one option is"`,
@@ -308,6 +392,7 @@ async function fetchStrategy(profile, modeId) {
     `- If their mode is Rest, say so with conviction: "Your ${mode.label} means your ${laneLabels[0]||"other lanes"} can wait. They will still be there next week."`,
     `- If they're in Focus Mode and running 4 lanes, name the lanes to pause: "Pause [lane], [lane], and [lane]. This week belongs to [focus lane]."`,
     `- Be the strategist who says what they already know but won't say to themselves.`,
+    hasHistory ? `- USE THE HISTORY DATA. If they have been in the same mode for multiple weeks, call it out by name. If their completion rate is low, say so directly. This is longitudinal intelligence, not a one-off snapshot.` : "",
     ``,
     `USER PROFILE:`,
     `Name: ${profile.name}`,
@@ -316,8 +401,11 @@ async function fetchStrategy(profile, modeId) {
     `Portfolio lanes: ${laneLabels.join(", ")||"none set"}`,
     `Focus Style: ${isLight?"Light Focus (10-15 min tasks, momentum over depth)":"Deep Focus (30-90 min tasks, strategic execution)"}`,
     ``,
-    `WHAT THEY ANSWERED (use this to understand their actual situation):`,
+    `WHAT THEY ANSWERED THIS WEEK:`,
     answerSummary,
+    ``,
+    hasHistory ? `LONGITUDINAL HISTORY (use this — this is what makes you different from a quiz):` : `HISTORY: First few weeks — no pattern data yet.`,
+    hasHistory ? memoryContext : "",
     ``,
     `COMPUTED DOMINANT MODE: ${mode.label}`,
     `Mode truth: ${mode.truth}`,
@@ -330,21 +418,22 @@ async function fetchStrategy(profile, modeId) {
     ``,
     `TASK RULE:`,
     taskLogic,
+    hasHistory && patterns.lastRate !== null ? `TASK CALIBRATION: Last week they completed ${patterns.lastRate}% of tasks. ${patterns.lastRate < 50 ? "Make this week's tasks SIMPLER and more specific — they are over-promising and under-delivering." : patterns.lastRate === 100 ? "They crushed last week. Push harder this week." : "Keep difficulty roughly the same."}` : "",
     ``,
     `Return ONLY valid JSON — no explanation, no markdown:`,
     `{`,
-    `  "callout": "One sentence. Declarative. Name their actual situation. e.g. You are running ${laneLabels.length} lanes at full speed and wondering why nothing is gaining traction. No hedging. No softening. No quotes in the output string.",`,
-    `  "directive": "One sentence. A direct instruction with their mode baked in. Name the lanes if relevant. e.g. Based on your ${mode.label}, do not open [lane]. Spend your time on [focus lane] and then close your laptop. No 'you might want to'.",`,
-    `  "stopDoing": "One specific behaviour to stop. Name the lane or habit directly. e.g. Stop opening your Creator dashboard until your Founder work has shipped.",`,
+    `  "callout": "One sentence. Declarative. Name their actual situation. ${hasHistory && patterns.streak >= 3 ? "They have been in " + mode.label + " for " + patterns.streak + " weeks — reference this if it reveals something." : ""} No hedging. No softening. No quotes in the output string.",`,
+    `  "directive": "One sentence. A direct instruction with their mode baked in. Name the lanes if relevant. No 'you might want to'.",`,
+    `  "stopDoing": "One specific behaviour to stop. Name the lane or habit directly.",`,
     `  "focusLane": "MUST be one of: ${laneLabels.join(" | ")||"any lane"}. This is the decision. Not a suggestion.",`,
-    `  "focusLaneReason": "One sentence. Explain the decision. Reference their mode, their answers, and their skills. Make it feel like you read their diary.",`,
+    `  "focusLaneReason": "One sentence. Explain the decision. Reference their mode, their history, and their skills. Make it feel like you have been watching them for weeks.",`,
     `  "weeklyActions": [`,
-    ...Array.from({length:taskCount},(_,i)=>`    { "action": "A direct instruction. Verb-first. Specific to their focus lane, mode, and skills. Name the actual thing to do — not a category. e.g. Open the Notion doc for [lane]. Write the three things blocking you. Then close it.", "time": "${taskTime}", "impact": "The specific thing this unlocks — not generic." },`),
+    ...Array.from({length:taskCount},(_,i)=>`    { "action": "A direct instruction. Verb-first. Specific to their focus lane, mode, and skills. Name the actual thing to do.", "time": "${taskTime}", "impact": "The specific thing this unlocks." },`),
     `  ],`,
-    `  "mantra": "${isLight?"Under 8 words. A quiet permission slip. Not motivational. e.g. Small moves. Real progress.":"Under 9 words. A conviction, not a suggestion. e.g. One lane. Full attention. No excuses."}",`,
-    `  "shareCallout": "First person. One sentence. The line that makes someone stop and say that is exactly me. Reference their specific mode and situation. e.g. I have been in ${mode.label} for two weeks and still acting like I am in Build Mode."`,
+    `  "mantra": "${isLight ? "Under 8 words. A quiet permission slip. Not motivational. e.g. Small moves. Real progress." : "Under 9 words. A conviction, not a suggestion. e.g. One lane. Full attention. No excuses."}",`,
+    `  "shareCallout": "First person. One sentence. Confrontational. Slightly exposing. Use their actual data. Streak: ${patterns?.streak||1} weeks. Completion: ${patterns?.avgCompletion||50}%. Make it feel seen and slightly uncomfortable — that is what gets shared."`,
     `}`,
-  ].join("\n");
+  ].filter(s => s !== "").join("\n");
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST", headers:{"Content-Type":"application/json"},
@@ -423,12 +512,12 @@ function SL({ ch, color }) { return <p style={{ fontSize:9, letterSpacing:4, col
 function StepBar({ n, total }) { return <div style={{ display:"flex", gap:6, marginBottom:32 }}>{Array.from({length:total},(_,i)=><div key={i} style={{ flex:1, height:2, borderRadius:1, background:i<n?T.inkSoft:T.border, transition:"background 0.4s" }}/>)}</div>; }
 
 function TabBar({ tab, setTab }) {
-  const tabs=[{id:"dashboard",icon:"◈",label:"Mode"},{id:"week",icon:"☐",label:"This Week"},{id:"history",icon:"◎",label:"History"},{id:"share",icon:"↗",label:"Share"}];
+  const tabs=[{id:"dashboard",icon:"◈",label:"Mode"},{id:"week",icon:"☐",label:"Week"},{id:"history",icon:"◎",label:"Arc"},{id:"pulse",icon:"⊙",label:"Pulse"},{id:"share",icon:"↗",label:"Share"}];
   return (
     <div style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:`1px solid ${T.border}`, display:"flex", zIndex:100, boxShadow:"0 -4px 20px rgba(15,12,10,0.07)" }}>
       {tabs.map(t=>(
-        <button key={t.id} onClick={()=>setTab(t.id)} style={{ flex:1, padding:"9px 0 11px", background:"transparent", border:"none", borderTop:`2px solid ${tab===t.id?T.inkSoft:"transparent"}`, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontSize:9, letterSpacing:"1.5px", textTransform:"uppercase", color:tab===t.id?T.inkWarm:T.muted, fontWeight:tab===t.id?500:400, transition:"all 0.15s" }}>
-          <div style={{ fontSize:15, marginBottom:2 }}>{t.icon}</div>{t.label}
+        <button key={t.id} onClick={()=>setTab(t.id)} style={{ flex:1, padding:"9px 0 11px", background:"transparent", border:"none", borderTop:`2px solid ${tab===t.id?T.inkSoft:"transparent"}`, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontSize:8, letterSpacing:"1.2px", textTransform:"uppercase", color:tab===t.id?T.inkWarm:T.muted, fontWeight:tab===t.id?500:400, transition:"all 0.15s" }}>
+          <div style={{ fontSize:14, marginBottom:2 }}>{t.icon}</div>{t.label}
         </button>
       ))}
     </div>
@@ -870,7 +959,7 @@ function Wizard({ init={}, onDone, onCancel }) {
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
-function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, onSwitch, onEdit, onCheckIn, onFocusStyleChange }) {
+function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, onSwitch, onEdit, onCheckIn, onFocusStyleChange, patterns }) {
   const mode = MODES[profile.modeId]||MODES.build;
   const isLight = profile.focusStyle==="light";
   const tasks = weekData?.tasks||[];
@@ -1031,6 +1120,32 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
           <div style={{ display:"flex", flexWrap:"wrap", gap:7 }}>
             {profile.skills.map((sk,i)=><span key={i} style={{ fontSize:12, color:T.sub, background:T.bg, border:`1px solid ${T.border}`, padding:"4px 11px", borderRadius:4 }}>{sk}</span>)}
           </div>
+        </div>
+      )}
+
+      {/* 8. ARC INTELLIGENCE — longitudinal pattern insights */}
+      {patterns && patterns.totalWeeks >= 2 && patterns.insights.length > 0 && (
+        <div style={{ margin:"10px 20px 0", background:T.ink, borderRadius:12, padding:"18px 20px" }}>
+          <p style={{ fontSize:9, letterSpacing:3, color:"rgba(166,108,64,0.5)", textTransform:"uppercase", marginBottom:12 }}>⊙ Your Arc — {patterns.totalWeeks} weeks tracked</p>
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {patterns.insights.map((insight, i) => (
+              <div key={i} style={{ display:"flex", gap:10, alignItems:"flex-start" }}>
+                <div style={{ width:4, height:4, borderRadius:"50%", background:"rgba(166,108,64,0.5)", flexShrink:0, marginTop:7 }}/>
+                <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:17, fontWeight:300, color:"#EDE8E1", lineHeight:1.5 }}>{insight}</p>
+              </div>
+            ))}
+          </div>
+          {patterns.avgCompletion !== null && (
+            <div style={{ marginTop:14, paddingTop:12, borderTop:"1px solid rgba(255,255,255,0.07)" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                <p style={{ fontSize:11, color:"rgba(237,232,225,0.4)" }}>Avg task completion</p>
+                <p style={{ fontSize:11, color:patterns.avgCompletion>=70?"#6EC98A":"rgba(237,232,225,0.5)", fontWeight:600 }}>{patterns.avgCompletion}%</p>
+              </div>
+              <div style={{ height:3, background:"rgba(255,255,255,0.08)", borderRadius:2 }}>
+                <div style={{ height:"100%", width:`${patterns.avgCompletion}%`, background:patterns.avgCompletion>=70?"#3A8A5A":"rgba(166,108,64,0.6)", borderRadius:2 }}/>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1310,7 +1425,126 @@ function Share({ profile, strategy, weekData }) {
   );
 }
 
-function Intro({ onStart }) {
+// ─── PULSE — Community Mode Feed ─────────────────────────────────────────────
+function Pulse({ profile, strategy }) {
+  const mode = MODES[profile.modeId]||MODES.build;
+  const [posted, setPosted] = useState(false);
+  const [feed, setFeed] = useState([]);
+  const [modeCounts, setModeCounts] = useState({});
+
+  // Simulated community data — seeded with realistic entries
+  const seedFeed = [
+    { name:"Amara K.", mode:"focus",     lane:"Brand Strategy",  callout:"I have been spreading myself across 5 clients and none of them are getting my best work.",   time:"2h ago" },
+    { name:"Tunde O.", mode:"build",     lane:"Freelance",       callout:"I keep rewriting my portfolio instead of just sending it. It goes live today.",              time:"3h ago" },
+    { name:"Remi A.", mode:"pivot",      lane:"Creative Work",   callout:"I have been in the wrong industry for 8 months and I have known it for 6 of them.",          time:"5h ago" },
+    { name:"Sola M.", mode:"stabilize",  lane:"Business",        callout:"My income is inconsistent because my process is inconsistent. This week I fix the process.", time:"6h ago" },
+    { name:"Kemi B.", mode:"expand",     lane:"Content",         callout:"My work is good but nobody sees it. That is on me, not on the algorithm.",                   time:"8h ago" },
+    { name:"Dami F.", mode:"rest",       lane:"Founder",         callout:"I have not taken a real break in 4 months. I am not being productive. I am being stubborn.", time:"9h ago" },
+    { name:"Ife L.",  mode:"refine",     lane:"Consulting",      callout:"My offer exists but it is not sharp enough to command what I want to charge.",                time:"12h ago" },
+    { name:"Zara T.", mode:"focus",      lane:"Creator",         callout:"I started 3 new projects this month. I am finishing none of them. Choosing one now.",        time:"14h ago" },
+    { name:"Bisi C.", mode:"build",      lane:"Side Project",    callout:"I have the skills. I keep waiting for the right moment. The moment is now.",                 time:"1d ago" },
+    { name:"Nini W.", mode:"stabilize",  lane:"Freelance",       callout:"I landed 3 clients and panicked. Stabilising before I take on anyone else.",                 time:"1d ago" },
+  ];
+
+  useEffect(() => {
+    // Load any real posted entries from localStorage
+    const stored = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k?.startsWith("mos_pulse_")) {
+        try { stored.push(JSON.parse(localStorage.getItem(k))); } catch {}
+      }
+    }
+    const all = [...stored, ...seedFeed];
+    setFeed(all);
+    // Count modes
+    const counts = {};
+    all.forEach(e => { counts[e.mode] = (counts[e.mode]||0) + 1; });
+    setModeCounts(counts);
+  }, [posted]);
+
+  const postCard = () => {
+    const entry = {
+      name: profile.name,
+      mode: profile.modeId,
+      lane: strategy?.focusLane || localFocusLane(profile, profile.modeId)?.label || "",
+      callout: strategy?.shareCallout || mode.callouts[0],
+      time: "just now",
+    };
+    try { localStorage.setItem(`mos_pulse_${profile.name}_${Date.now()}`, JSON.stringify(entry)); } catch {}
+    setPosted(true);
+  };
+
+  const sortedModes = Object.entries(modeCounts).sort((a,b)=>b[1]-a[1]);
+
+  return (
+    <div style={{ padding:"32px 20px 100px", maxWidth:480, margin:"0 auto", fontFamily:"'DM Sans',sans-serif" }}>
+      <p style={{ fontSize:9, letterSpacing:4, color:T.inkSoft, textTransform:"uppercase", marginBottom:4 }}>⊙ Pulse</p>
+      <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:30, fontWeight:300, color:T.ink, marginBottom:4 }}>The creative pulse</h2>
+      <p style={{ fontSize:13, color:T.sub, marginBottom:20, lineHeight:1.7 }}>Multi-passionate creatives declaring their mode this week. You are not alone in this.</p>
+
+      {/* Mode distribution */}
+      <div style={{ background:"#fff", border:`1px solid ${T.border}`, borderRadius:12, padding:"16px 18px", marginBottom:16, boxShadow:T.sh }}>
+        <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:12 }}>This week's energy</p>
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {sortedModes.map(([mId, count]) => {
+            const m = MODES[mId]; if (!m) return null;
+            const pct = Math.round((count / feed.length) * 100);
+            return (
+              <div key={mId}>
+                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                  <p style={{ fontSize:12, color:m.moodColor, fontWeight:500 }}>{m.emoji} {m.label}</p>
+                  <p style={{ fontSize:11, color:T.muted }}>{count} people · {pct}%</p>
+                </div>
+                <div style={{ height:3, background:T.bg, borderRadius:2 }}>
+                  <div style={{ height:"100%", width:`${pct}%`, background:m.moodColor, borderRadius:2, opacity:0.6 }}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Post your card CTA */}
+      {!posted ? (
+        <div style={{ background:mode.moodBg, border:`1.5px solid ${mode.moodBorder}`, borderRadius:12, padding:"16px 18px", marginBottom:16 }}>
+          <p style={{ fontSize:13, color:mode.moodColor, fontWeight:600, marginBottom:10 }}>You're in {mode.label}. Add your voice.</p>
+          <Btn onClick={postCard} full>Declare My Mode →</Btn>
+        </div>
+      ) : (
+        <div style={{ background:T.tint, border:`1px solid ${T.tintBorder}`, borderRadius:12, padding:"14px 18px", marginBottom:16 }}>
+          <p style={{ fontSize:13, color:T.inkWarm, fontWeight:500 }}>✓ You're on the pulse — {mode.label}</p>
+        </div>
+      )}
+
+      {/* Live feed */}
+      <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:12 }}>Live declarations</p>
+      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+        {feed.map((entry, i) => {
+          const m = MODES[entry.mode]||MODES.build;
+          const isYou = entry.name === profile.name;
+          return (
+            <div key={i} style={{ background: isYou ? T.tint : "#fff", border:`1px solid ${isYou ? T.tintBorder : T.border}`, borderRadius:10, padding:"14px 16px", boxShadow:T.sh }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
+                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <div style={{ width:28, height:28, borderRadius:"50%", background:m.moodColor+"22", border:`1px solid ${m.moodColor}44`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>{m.emoji}</div>
+                  <div>
+                    <p style={{ fontSize:12, fontWeight:600, color:T.ink }}>{entry.name}{isYou?" (you)":""}</p>
+                    <p style={{ fontSize:10, color:m.moodColor }}>{m.label}{entry.lane ? ` · ${entry.lane}` : ""}</p>
+                  </div>
+                </div>
+                <p style={{ fontSize:10, color:T.muted, flexShrink:0 }}>{entry.time}</p>
+              </div>
+              <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:16, fontWeight:300, color:T.ink, lineHeight:1.55, fontStyle:"italic" }}>"{entry.callout}"</p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
   return (
     <div style={{ fontFamily:"'DM Sans',sans-serif", background:T.bg, minHeight:"100vh", display:"flex", flexDirection:"column", justifyContent:"center", alignItems:"center", padding:"48px 32px", textAlign:"center", position:"relative", overflow:"hidden" }}>
       <div style={{ position:"absolute", top:-80, right:-80, width:320, height:320, borderRadius:"50%", background:"radial-gradient(circle, rgba(166,108,64,0.1) 0%, transparent 65%)", pointerEvents:"none" }}/>
@@ -1348,7 +1582,7 @@ function Intro({ onStart }) {
         </div>
 
         {/* CTA */}
-        <button onClick={onStart} style={{ background:T.ink, color:"#FAF7F4", border:"none", padding:"16px 48px", fontSize:11, letterSpacing:"2px", textTransform:"uppercase", fontWeight:500, cursor:"pointer", borderRadius:4, fontFamily:"'DM Sans',sans-serif", boxShadow:"0 2px 12px rgba(15,12,10,0.22)", display:"block", width:"100%", marginBottom:14 }}>
+        <button type="button" onClick={onStart} style={{ background:T.ink, color:"#FAF7F4", border:"none", padding:"16px 48px", fontSize:11, letterSpacing:"2px", textTransform:"uppercase", fontWeight:500, cursor:"pointer", borderRadius:4, fontFamily:"'DM Sans',sans-serif", boxShadow:"0 2px 12px rgba(15,12,10,0.22)", display:"block", width:"100%", marginBottom:14, touchAction:"manipulation", WebkitTapHighlightColor:"rgba(0,0,0,0)", minHeight:50 }}>
           Find My Mode →
         </button>
         <p style={{ fontSize:11, color:T.muted }}>Free · no account required · data saved to this device</p>
@@ -1413,7 +1647,7 @@ export default function App() {
   useEffect(() => {
     if(!profile||appState!=="app") return;
     setStratLoading(true); setStrategy(null);
-    fetchStrategy(profile,profile.modeId||"build").then(r=>{setStrategy(r);setStratLoading(false);}).catch(()=>setStratLoading(false));
+    fetchStrategy(profile, profile.modeId||"build", analysePatterns(history, weekHistory, profile.modeId||"build")).then(r=>{setStrategy(r);setStratLoading(false);}).catch(()=>setStratLoading(false));
   }, [stratKey]);
 
   const saveProfile=async p=>{await db.set(email,"profile",p);setProfile(p);};
@@ -1484,6 +1718,8 @@ export default function App() {
     await saveProfile(updated); setEditing(false); setStratKey(k=>k+1);
   };
 
+  const patterns = analysePatterns(history, weekHistory, profile?.modeId||"build");
+
   if(appState==="loading") return <div style={{background:"#F5F2ED",minHeight:"100vh"}}/>;
   if(appState==="intro") return <Intro onStart={()=>setAppState("login")}/>;
   if(appState==="login") return <SoftLogin onLogin={handleLogin}/>;
@@ -1492,9 +1728,10 @@ export default function App() {
 
   return (
     <div style={{fontFamily:"'DM Sans',sans-serif",background:"#F5F2ED",minHeight:"100vh",color:"#0F0C0A"}}>
-      {tab==="dashboard" && <Dashboard profile={profile} strategy={strategy} stratLoading={stratLoading} weekData={weekData} onUpdateWeek={saveWeek} onSwitch={()=>setShowSwitch(true)} onEdit={()=>setEditing(true)} onCheckIn={()=>setShowCheckIn(true)} onFocusStyleChange={()=>setShowFocusStyle(true)}/>}
+      {tab==="dashboard" && <Dashboard profile={profile} strategy={strategy} stratLoading={stratLoading} weekData={weekData} onUpdateWeek={saveWeek} onSwitch={()=>setShowSwitch(true)} onEdit={()=>setEditing(true)} onCheckIn={()=>setShowCheckIn(true)} onFocusStyleChange={()=>setShowFocusStyle(true)} patterns={patterns}/>}
       {tab==="week"      && <ThisWeek  profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy}/>}
       {tab==="history"   && <History   history={history} weekHistory={weekHistory} weekData={weekData}/>}
+      {tab==="pulse"     && <Pulse     profile={profile} strategy={strategy}/>}
       {tab==="share"     && <Share     profile={profile} strategy={strategy} weekData={weekData}/>}
       <TabBar tab={tab} setTab={setTab}/>
       {showSwitch    && <SwitchSheet onSave={switchMode} onClose={()=>setShowSwitch(false)}/>}
