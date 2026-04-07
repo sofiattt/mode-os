@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import { Analytics } from "@vercel/analytics/react";
 
 const T = {
   bg:"#F5F2ED", bgCard:"#FFFFFF",
@@ -1429,26 +1428,14 @@ function Share({ profile, strategy, weekData }) {
 // ─── PULSE — Community Mode Feed ─────────────────────────────────────────────
 function Pulse({ profile, strategy }) {
   const mode = MODES[profile.modeId]||MODES.build;
-  const [posted, setPosted] = useState(false);
+  const [step, setStep] = useState("idle"); // idle | compose | posted
+  const [customText, setCustomText] = useState("");
   const [feed, setFeed] = useState([]);
   const [modeCounts, setModeCounts] = useState({});
+  const aiSuggestion = strategy?.shareCallout || mode.callouts[0];
+  const focusLane = strategy?.focusLane || localFocusLane(profile, profile.modeId)?.label || "";
 
-  // Simulated community data — seeded with realistic entries
-  const seedFeed = [
-    { name:"Amara K.", mode:"focus",     lane:"Brand Strategy",  callout:"I have been spreading myself across 5 clients and none of them are getting my best work.",   time:"2h ago" },
-    { name:"Tunde O.", mode:"build",     lane:"Freelance",       callout:"I keep rewriting my portfolio instead of just sending it. It goes live today.",              time:"3h ago" },
-    { name:"Remi A.", mode:"pivot",      lane:"Creative Work",   callout:"I have been in the wrong industry for 8 months and I have known it for 6 of them.",          time:"5h ago" },
-    { name:"Sola M.", mode:"stabilize",  lane:"Business",        callout:"My income is inconsistent because my process is inconsistent. This week I fix the process.", time:"6h ago" },
-    { name:"Kemi B.", mode:"expand",     lane:"Content",         callout:"My work is good but nobody sees it. That is on me, not on the algorithm.",                   time:"8h ago" },
-    { name:"Dami F.", mode:"rest",       lane:"Founder",         callout:"I have not taken a real break in 4 months. I am not being productive. I am being stubborn.", time:"9h ago" },
-    { name:"Ife L.",  mode:"refine",     lane:"Consulting",      callout:"My offer exists but it is not sharp enough to command what I want to charge.",                time:"12h ago" },
-    { name:"Zara T.", mode:"focus",      lane:"Creator",         callout:"I started 3 new projects this month. I am finishing none of them. Choosing one now.",        time:"14h ago" },
-    { name:"Bisi C.", mode:"build",      lane:"Side Project",    callout:"I have the skills. I keep waiting for the right moment. The moment is now.",                 time:"1d ago" },
-    { name:"Nini W.", mode:"stabilize",  lane:"Freelance",       callout:"I landed 3 clients and panicked. Stabilising before I take on anyone else.",                 time:"1d ago" },
-  ];
-
-  useEffect(() => {
-    // Load any real posted entries from localStorage
+  const loadFeed = () => {
     const stored = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
@@ -1456,96 +1443,161 @@ function Pulse({ profile, strategy }) {
         try { stored.push(JSON.parse(localStorage.getItem(k))); } catch {}
       }
     }
-    const all = [...stored, ...seedFeed];
-    setFeed(all);
-    // Count modes
+    // Sort newest first
+    stored.sort((a,b) => (b.ts||0) - (a.ts||0));
+    setFeed(stored);
     const counts = {};
-    all.forEach(e => { counts[e.mode] = (counts[e.mode]||0) + 1; });
+    stored.forEach(e => { counts[e.mode] = (counts[e.mode]||0) + 1; });
     setModeCounts(counts);
-  }, [posted]);
+  };
 
-  const postCard = () => {
+  useEffect(() => { loadFeed(); }, []);
+
+  const hasPostedThisWeek = feed.some(e => e.name === profile.name && e.week === weekKey());
+
+  const submitPost = (text) => {
+    if (!text.trim()) return;
     const entry = {
       name: profile.name,
       mode: profile.modeId,
-      lane: strategy?.focusLane || localFocusLane(profile, profile.modeId)?.label || "",
-      callout: strategy?.shareCallout || mode.callouts[0],
+      lane: focusLane,
+      callout: text.trim(),
       time: "just now",
+      ts: Date.now(),
+      week: weekKey(),
     };
-    try { localStorage.setItem(`mos_pulse_${profile.name}_${Date.now()}`, JSON.stringify(entry)); } catch {}
-    setPosted(true);
+    try {
+      localStorage.setItem(`mos_pulse_${profile.name}_${Date.now()}`, JSON.stringify(entry));
+    } catch {}
+    setStep("posted");
+    loadFeed();
   };
 
+  const myPost = feed.find(e => e.name === profile.name && e.week === weekKey());
   const sortedModes = Object.entries(modeCounts).sort((a,b)=>b[1]-a[1]);
 
   return (
     <div style={{ padding:"32px 20px 100px", maxWidth:480, margin:"0 auto", fontFamily:"'DM Sans',sans-serif" }}>
       <p style={{ fontSize:9, letterSpacing:4, color:T.inkSoft, textTransform:"uppercase", marginBottom:4 }}>⊙ Pulse</p>
       <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:30, fontWeight:300, color:T.ink, marginBottom:4 }}>The creative pulse</h2>
-      <p style={{ fontSize:13, color:T.sub, marginBottom:20, lineHeight:1.7 }}>Multi-passionate creatives declaring their mode this week. You are not alone in this.</p>
+      <p style={{ fontSize:13, color:T.sub, marginBottom:20, lineHeight:1.7 }}>Declare your mode. Be honest. You are not alone in this.</p>
 
-      {/* Mode distribution */}
-      <div style={{ background:"#fff", border:`1px solid ${T.border}`, borderRadius:12, padding:"16px 18px", marginBottom:16, boxShadow:T.sh }}>
-        <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:12 }}>This week's energy</p>
-        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-          {sortedModes.map(([mId, count]) => {
-            const m = MODES[mId]; if (!m) return null;
-            const pct = Math.round((count / feed.length) * 100);
-            return (
-              <div key={mId}>
-                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-                  <p style={{ fontSize:12, color:m.moodColor, fontWeight:500 }}>{m.emoji} {m.label}</p>
-                  <p style={{ fontSize:11, color:T.muted }}>{count} people · {pct}%</p>
+      {/* YOUR DECLARATION — compose / posted states */}
+      {!hasPostedThisWeek && step !== "posted" ? (
+        <div style={{ background:mode.moodBg, border:`2px solid ${mode.moodBorder}`, borderRadius:14, padding:"18px 18px", marginBottom:16 }}>
+          <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:12 }}>
+            <div style={{ width:28, height:28, borderRadius:"50%", background:mode.moodColor+"22", border:`1px solid ${mode.moodColor}44`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>{mode.emoji}</div>
+            <div>
+              <p style={{ fontSize:12, fontWeight:600, color:T.ink }}>{profile.name}</p>
+              <p style={{ fontSize:10, color:mode.moodColor }}>{mode.label}{focusLane ? ` · ${focusLane}` : ""}</p>
+            </div>
+          </div>
+
+          {step === "idle" ? (
+            <>
+              <p style={{ fontSize:13, color:mode.moodColor, fontWeight:600, marginBottom:12, lineHeight:1.5 }}>You're in {mode.label}. What's the honest line?</p>
+              {/* AI suggestion as a tap-to-use option */}
+              {aiSuggestion && (
+                <div
+                  onClick={() => { setCustomText(aiSuggestion); setStep("compose"); }}
+                  style={{ background:"rgba(255,255,255,0.5)", border:`1px solid ${mode.moodBorder}`, borderRadius:8, padding:"10px 12px", marginBottom:10, cursor:"pointer" }}
+                >
+                  <p style={{ fontSize:10, letterSpacing:1.5, color:mode.moodColor, textTransform:"uppercase", marginBottom:4 }}>✦ Use AI's line for you</p>
+                  <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:15, color:T.ink, lineHeight:1.5, fontStyle:"italic" }}>"{aiSuggestion}"</p>
                 </div>
-                <div style={{ height:3, background:T.bg, borderRadius:2 }}>
-                  <div style={{ height:"100%", width:`${pct}%`, background:m.moodColor, borderRadius:2, opacity:0.6 }}/>
-                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => { setCustomText(""); setStep("compose"); }}
+                style={{ width:"100%", background:"transparent", border:`1px solid ${mode.moodBorder}`, borderRadius:8, padding:"11px", fontSize:12, color:mode.moodColor, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}
+              >Write my own →</button>
+            </>
+          ) : step === "compose" ? (
+            <>
+              <textarea
+                value={customText}
+                onChange={e => setCustomText(e.target.value)}
+                placeholder="Say the honest thing. One sentence. First person."
+                autoFocus
+                style={{ width:"100%", background:"rgba(255,255,255,0.6)", border:`1.5px solid ${mode.moodBorder}`, borderRadius:8, padding:"12px", fontSize:14, color:T.ink, fontFamily:"'Cormorant Garamond',serif", fontStyle:"italic", outline:"none", resize:"none", minHeight:80, lineHeight:1.6, marginBottom:10 }}
+              />
+              <p style={{ fontSize:11, color:T.muted, marginBottom:10, lineHeight:1.6 }}>Keep it first person. One sentence. The kind of thing you normally only think.</p>
+              <div style={{ display:"flex", gap:8 }}>
+                <button type="button" onClick={() => setStep("idle")} style={{ background:"transparent", border:`1px solid ${mode.moodBorder}`, borderRadius:6, padding:"10px 16px", fontSize:11, letterSpacing:"1px", textTransform:"uppercase", color:mode.moodColor, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>Back</button>
+                <button type="button" onClick={() => submitPost(customText)} disabled={!customText.trim()} style={{ flex:1, background:customText.trim()?T.ink:"#E0D8CE", border:"none", borderRadius:6, padding:"11px", fontSize:11, letterSpacing:"1.5px", textTransform:"uppercase", color:customText.trim()?"#FAF7F4":"#A09080", cursor:customText.trim()?"pointer":"not-allowed", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>Post to Pulse →</button>
               </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Post your card CTA */}
-      {!posted ? (
-        <div style={{ background:mode.moodBg, border:`1.5px solid ${mode.moodBorder}`, borderRadius:12, padding:"16px 18px", marginBottom:16 }}>
-          <p style={{ fontSize:13, color:mode.moodColor, fontWeight:600, marginBottom:10 }}>You're in {mode.label}. Add your voice.</p>
-          <Btn onClick={postCard} full>Declare My Mode →</Btn>
+            </>
+          ) : null}
         </div>
       ) : (
         <div style={{ background:T.tint, border:`1px solid ${T.tintBorder}`, borderRadius:12, padding:"14px 18px", marginBottom:16 }}>
-          <p style={{ fontSize:13, color:T.inkWarm, fontWeight:500 }}>✓ You're on the pulse — {mode.label}</p>
+          <p style={{ fontSize:12, color:T.inkWarm, fontWeight:600, marginBottom:4 }}>✓ You declared this week</p>
+          {myPost && <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:15, color:T.sub, fontStyle:"italic" }}>"{myPost.callout}"</p>}
         </div>
       )}
 
-      {/* Live feed */}
-      <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:12 }}>Live declarations</p>
-      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-        {feed.map((entry, i) => {
-          const m = MODES[entry.mode]||MODES.build;
-          const isYou = entry.name === profile.name;
-          return (
-            <div key={i} style={{ background: isYou ? T.tint : "#fff", border:`1px solid ${isYou ? T.tintBorder : T.border}`, borderRadius:10, padding:"14px 16px", boxShadow:T.sh }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
-                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                  <div style={{ width:28, height:28, borderRadius:"50%", background:m.moodColor+"22", border:`1px solid ${m.moodColor}44`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>{m.emoji}</div>
-                  <div>
-                    <p style={{ fontSize:12, fontWeight:600, color:T.ink }}>{entry.name}{isYou?" (you)":""}</p>
-                    <p style={{ fontSize:10, color:m.moodColor }}>{m.label}{entry.lane ? ` · ${entry.lane}` : ""}</p>
+      {/* Mode distribution — only show if there are real posts */}
+      {feed.length > 0 && sortedModes.length > 0 && (
+        <div style={{ background:"#fff", border:`1px solid ${T.border}`, borderRadius:12, padding:"16px 18px", marginBottom:16, boxShadow:T.sh }}>
+          <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:12 }}>This week's energy · {feed.length} declaration{feed.length!==1?"s":""}</p>
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {sortedModes.map(([mId, count]) => {
+              const m = MODES[mId]; if (!m) return null;
+              const pct = Math.round((count / feed.length) * 100);
+              return (
+                <div key={mId}>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                    <p style={{ fontSize:12, color:m.moodColor, fontWeight:500 }}>{m.emoji} {m.label}</p>
+                    <p style={{ fontSize:11, color:T.muted }}>{count} · {pct}%</p>
+                  </div>
+                  <div style={{ height:3, background:T.bg, borderRadius:2 }}>
+                    <div style={{ height:"100%", width:`${pct}%`, background:m.moodColor, borderRadius:2, opacity:0.7 }}/>
                   </div>
                 </div>
-                <p style={{ fontSize:10, color:T.muted, flexShrink:0 }}>{entry.time}</p>
-              </div>
-              <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:16, fontWeight:300, color:T.ink, lineHeight:1.55, fontStyle:"italic" }}>"{entry.callout}"</p>
-            </div>
-          );
-        })}
-      </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Feed */}
+      {feed.length > 0 ? (
+        <>
+          <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:12 }}>Declarations this week</p>
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {feed.map((entry, i) => {
+              const m = MODES[entry.mode]||MODES.build;
+              const isYou = entry.name === profile.name;
+              return (
+                <div key={i} style={{ background: isYou ? T.tint : "#fff", border:`1.5px solid ${isYou ? T.tintBorder : T.border}`, borderRadius:10, padding:"14px 16px", boxShadow:T.sh }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
+                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                      <div style={{ width:30, height:30, borderRadius:"50%", background:m.moodColor+"22", border:`1.5px solid ${m.moodColor}44`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>{m.emoji}</div>
+                      <div>
+                        <p style={{ fontSize:12, fontWeight:600, color:T.ink }}>{entry.name}{isYou?" · you":""}</p>
+                        <p style={{ fontSize:10, color:m.moodColor }}>{m.label}{entry.lane ? ` · ${entry.lane}` : ""}</p>
+                      </div>
+                    </div>
+                    <p style={{ fontSize:10, color:T.muted, flexShrink:0 }}>{entry.time}</p>
+                  </div>
+                  <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:16, fontWeight:300, color:T.ink, lineHeight:1.6, fontStyle:"italic" }}>"{entry.callout}"</p>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <div style={{ textAlign:"center", padding:"40px 20px", background:"#fff", border:`1px solid ${T.border}`, borderRadius:12 }}>
+          <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, fontWeight:300, color:T.ink, marginBottom:8 }}>Be the first this week.</p>
+          <p style={{ fontSize:13, color:T.muted, lineHeight:1.7 }}>Pulse grows as creatives declare their mode. Your honest line is what makes others feel seen.</p>
+        </div>
+      )}
     </div>
   );
 }
 
 
+function Intro({ onStart }) {
   return (
     <div style={{ fontFamily:"'DM Sans',sans-serif", background:T.bg, minHeight:"100vh", display:"flex", flexDirection:"column", justifyContent:"center", alignItems:"center", padding:"48px 32px", textAlign:"center", position:"relative", overflow:"hidden" }}>
       <div style={{ position:"absolute", top:-80, right:-80, width:320, height:320, borderRadius:"50%", background:"radial-gradient(circle, rgba(166,108,64,0.1) 0%, transparent 65%)", pointerEvents:"none" }}/>
@@ -1738,7 +1790,6 @@ export default function App() {
       {showSwitch    && <SwitchSheet onSave={switchMode} onClose={()=>setShowSwitch(false)}/>}
       {showCheckIn   && <CheckInSheet onStay={checkInStay} onSwitch={()=>{setShowCheckIn(false);setShowSwitch(true);}} onClose={()=>setShowCheckIn(false)}/>}
       {showFocusStyle&& <FocusStyleSheet current={profile.focusStyle} onSave={changeFocusStyle} onClose={()=>setShowFocusStyle(false)}/>}
-        <Analytics />
     </div>
   );
 }
