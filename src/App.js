@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Analytics } from "@vercel/analytics/react";
 
 const T = {
   bg:"#F5F2ED", bgCard:"#FFFFFF",
@@ -1790,6 +1791,7 @@ export default function App() {
       {showSwitch    && <SwitchSheet onSave={switchMode} onClose={()=>setShowSwitch(false)}/>}
       {showCheckIn   && <CheckInSheet onStay={checkInStay} onSwitch={()=>{setShowCheckIn(false);setShowSwitch(true);}} onClose={()=>setShowCheckIn(false)}/>}
       {showFocusStyle&& <FocusStyleSheet current={profile.focusStyle} onSave={changeFocusStyle} onClose={()=>setShowFocusStyle(false)}/>}
+  <Analytics />
     </div>
   );
 }
