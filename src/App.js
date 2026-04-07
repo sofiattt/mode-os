@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Analytics } from "@vercel/analytics/react";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 const T = {
   bg:"#F5F2ED", bgCard:"#FFFFFF",
@@ -1792,6 +1793,7 @@ export default function App() {
       {showCheckIn   && <CheckInSheet onStay={checkInStay} onSwitch={()=>{setShowCheckIn(false);setShowSwitch(true);}} onClose={()=>setShowCheckIn(false)}/>}
       {showFocusStyle&& <FocusStyleSheet current={profile.focusStyle} onSave={changeFocusStyle} onClose={()=>setShowFocusStyle(false)}/>}
   <Analytics />
+  <SpeedInsights />
     </div>
   );
 }
