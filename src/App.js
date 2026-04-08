@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { Analytics } from "@vercel/analytics/react";
+import { createClient } from '@supabase/supabase-js';
+window.__SUPABASE_URL__ = import.meta.env.VITE_SUPABASE_URL;
+window.__SUPABASE_KEY__ = import.meta.env.VITE_SUPABASE_KEY;
+window.supabase = { createClient };
 
 const T = {
   bg:"#F5F2ED", bgCard:"#FFFFFF",
