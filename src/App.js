@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import { Analytics } from "@vercel/analytics/react";
 import { createClient } from '@supabase/supabase-js';
-window.__SUPABASE_URL__ = import.meta.env.VITE_SUPABASE_URL;
-window.__SUPABASE_KEY__ = import.meta.env.VITE_SUPABASE_KEY;
+window.__SUPABASE_URL__ = process.env.REACT_APP_SUPABASE_URL || "";
+window.__SUPABASE_KEY__ = process.env.REACT_APP_SUPABASE_KEY || "";
 window.supabase = { createClient };
 
 const T = {
@@ -1795,7 +1794,6 @@ export default function App() {
       {showSwitch    && <SwitchSheet onSave={switchMode} onClose={()=>setShowSwitch(false)}/>}
       {showCheckIn   && <CheckInSheet onStay={checkInStay} onSwitch={()=>{setShowCheckIn(false);setShowSwitch(true);}} onClose={()=>setShowCheckIn(false)}/>}
       {showFocusStyle&& <FocusStyleSheet current={profile.focusStyle} onSave={changeFocusStyle} onClose={()=>setShowFocusStyle(false)}/>}
-  <Analytics />
     </div>
   );
 }
