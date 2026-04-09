@@ -1056,11 +1056,6 @@ function Wizard({ init={}, onDone, onCancel }) {
   );
 }
 
-  // (wizard steps now defined inline above)
-
-  return null; // handled above
-}
-
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, onSwitch, onEdit, onCheckIn, onFocusStyleChange, patterns }) {
   const mode = MODES[profile.modeId]||MODES.build;
