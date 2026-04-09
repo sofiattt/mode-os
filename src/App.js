@@ -281,11 +281,9 @@ const db = {
       try {
         const { data } = await sb.from("user_data").select("value").eq("email", email).eq("key", k).single();
         return data?.value ?? null;
-      } catch {}
-    }
-    // localStorage fallback
-    try { const v = localStorage.getItem(db._lsKey(email,k)); return v ? JSON.parse(v) : null; } catch { return null; }
-  },
+      } catch { return null; }
+      return null;
+    },
 
   async set(email, k, v) {
     const sb = getSupabase();
@@ -294,10 +292,7 @@ const db = {
         await sb.from("user_data").upsert({ email, key: k, value: v, updated_at: new Date().toISOString() }, { onConflict: "email,key" });
         return;
       } catch {}
-    }
-    // localStorage fallback
-    try { localStorage.setItem(db._lsKey(email,k), JSON.stringify(v)); } catch {}
-  },
+    },
 
   // Migrate any existing localStorage data to Supabase for this email
   async migrate(email) {
