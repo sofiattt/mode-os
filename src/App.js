@@ -275,15 +275,16 @@ function getSupabase() {
 const db = {
   _lsKey: (email, k) => `mos_${email.toLowerCase().replace(/[^a-z0-9]/g,"_")}_${k}`,
 
-  async get(email, k) {
+    async get(email, k) {
     const sb = getSupabase();
     if (sb) {
       try {
         const { data } = await sb.from("user_data").select("value").eq("email", email).eq("key", k).single();
         return data?.value ?? null;
       } catch { return null; }
-      return null;
-    },
+    }
+    return null;
+  },
 
   async set(email, k, v) {
     const sb = getSupabase();
