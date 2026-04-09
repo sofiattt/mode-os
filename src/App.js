@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 const T = {
   bg:"#F5F2ED", bgCard:"#FFFFFF",
@@ -2510,6 +2511,8 @@ export default function App() {
       {showCheckIn       && <CheckInSheet onStay={checkInStay} onSwitch={()=>{setShowCheckIn(false);setShowSwitch(true);}} onClose={()=>setShowCheckIn(false)}/>}
       {showFocusStyle    && <FocusStyleSheet current={profile.focusStyle} onSave={changeFocusStyle} onClose={()=>setShowFocusStyle(false)}/>}
       {showWeeklyReview  && <WeeklyReview profile={profile} weekData={weekData} history={history} weekHistory={weekHistory} onComplete={weeklyReviewComplete} onClose={()=>setShowWeeklyReview(false)}/>}
+        <SpeedInsights />
+
     </div>
   );
 }
