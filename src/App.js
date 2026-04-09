@@ -2048,14 +2048,44 @@ function WeeklyReview({ profile, weekData, history, weekHistory, onComplete, onC
 }
 
 // ─── DAILY VIEW with habits + week timeline ───────────────────────────────────
+// Habits are daily pulse checks — binary yes/no, behavioural, not instructional.
+// They must feel different from tasks: shorter, personal, almost like a mirror.
 const MODE_HABITS = {
-  build:     ["Ship one thing today","No new ideas until you finish what's open","Open your project first thing"],
-  stabilize: ["Do the one task you've been avoiding","Check in on your income or pipeline","Keep your schedule consistent today"],
-  pivot:     ["Explore one new direction for 15 min","Talk to someone in a space you're curious about","Drop one thing that's no longer serving you"],
-  focus:     ["Touch only your focus lane today","Say no to one thing that would pull you away","Work on your focus lane before checking messages"],
-  expand:    ["Put your work in one new space today","Reach out to one person","Post or share something about your work"],
-  refine:    ["Improve one thing until it's genuinely better","Ask for feedback on your strongest piece","Cut one thing that dilutes your work"],
-  rest:      ["Protect your rest today — no guilt","Do one thing purely for enjoyment","Go outside at some point today"],
+  build: [
+    { q: "Did you make progress on something today?",     yes: "Moving",      no: "Not yet" },
+    { q: "Did you avoid starting something new?",          yes: "Focused",     no: "Scattered" },
+    { q: "Did you close a loop instead of opening one?",  yes: "Consistent",  no: "Still open" },
+  ],
+  stabilize: [
+    { q: "Did you stick to your schedule today?",          yes: "Consistent",  no: "Off track" },
+    { q: "Did you check in on your income or pipeline?",   yes: "Aware",       no: "Avoided it" },
+    { q: "Did you do the thing you've been putting off?",  yes: "Done",        no: "Tomorrow" },
+  ],
+  pivot: [
+    { q: "Did you spend time exploring something new?",    yes: "Curious",     no: "Not yet" },
+    { q: "Did you let go of something that isn't working?",yes: "Lighter",     no: "Holding on" },
+    { q: "Did you talk to anyone outside your bubble?",    yes: "Connected",   no: "Stayed in" },
+  ],
+  focus: [
+    { q: "Did you stay in your focus lane today?",         yes: "Locked in",   no: "Drifted" },
+    { q: "Did you say no to at least one distraction?",    yes: "Protected",   no: "Let it in" },
+    { q: "Did you start work before checking messages?",   yes: "Intentional", no: "Reactive" },
+  ],
+  expand: [
+    { q: "Did you put your work in front of new eyes?",    yes: "Visible",     no: "Still hidden" },
+    { q: "Did you reach out to someone today?",            yes: "Connected",   no: "Not yet" },
+    { q: "Did you post or share anything?",                yes: "Out there",   no: "Stayed quiet" },
+  ],
+  refine: [
+    { q: "Did you improve one specific thing today?",      yes: "Sharper",     no: "Same as before" },
+    { q: "Did you ask for feedback or a second opinion?",  yes: "Open",        no: "Kept it closed" },
+    { q: "Did you remove something that didn't belong?",   yes: "Cleaner",     no: "Still cluttered" },
+  ],
+  rest: [
+    { q: "Did you protect your energy today?",             yes: "Rested",      no: "Pushed through" },
+    { q: "Did you do something purely for enjoyment?",     yes: "Recharged",   no: "Still depleting" },
+    { q: "Did you go outside or step away from screens?",  yes: "Grounded",    no: "Screen-locked" },
+  ],
 };
 
 function DailyView({ profile, weekData, onUpdateWeek, strategy, onCapture }) {
@@ -2070,8 +2100,8 @@ function DailyView({ profile, weekData, onUpdateWeek, strategy, onCapture }) {
   const habitsChecked = weekData?.habits?.[dayKey] || {};
   const habits = MODE_HABITS[profile.modeId]||MODE_HABITS.build;
 
-  const toggleHabit = (i) => {
-    const updated = { ...(weekData?.habits||{}), [dayKey]: { ...habitsChecked, [i]: !habitsChecked[i] } };
+  const toggleHabit = (i, val) => {
+    const updated = { ...(weekData?.habits||{}), [dayKey]: { ...habitsChecked, [i]: val } };
     onUpdateWeek({ ...weekData, habits: updated });
   };
 
@@ -2123,42 +2153,56 @@ function DailyView({ profile, weekData, onUpdateWeek, strategy, onCapture }) {
         )}
       </div>
 
-      {/* Daily habits */}
+      {/* Daily habits — pulse check format */}
       <div style={{ margin:"10px 20px 0", background:"#fff", border:`1.5px solid ${T.border}`, borderRadius:12, overflow:"hidden", boxShadow:T.shMd }}>
         <div style={{ padding:"12px 18px 10px", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase" }}>Daily habits</p>
-          <p style={{ fontSize:11, color:Object.values(habitsChecked).filter(Boolean).length===habits.length?T.inkSoft:T.muted }}>
-            {Object.values(habitsChecked).filter(Boolean).length}/{habits.length}
+          <div>
+            <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase", marginBottom:2 }}>Daily pulse</p>
+            <p style={{ fontSize:11, color:T.muted }}>3 questions. Honest answers only.</p>
+          </div>
+          <p style={{ fontSize:11, color:Object.keys(habitsChecked).filter(k=>habitsChecked[k]!==undefined).length===habits.length?T.inkSoft:T.muted }}>
+            {Object.keys(habitsChecked).filter(k=>habitsChecked[k]!==undefined).length}/{habits.length}
           </p>
         </div>
         {habits.map((h,i) => {
-          const checked = !!habitsChecked[i];
+          const answer = habitsChecked[i]; // true=yes, false=no, undefined=unanswered
+          const answered = answer !== undefined;
           return (
-            <div key={i} onClick={()=>toggleHabit(i)} style={{ display:"flex", gap:12, alignItems:"center", padding:"13px 18px", borderBottom:i<habits.length-1?`1px solid ${T.border}`:"none", cursor:"pointer", background:checked?"#FAFAF8":"#fff", transition:"background 0.15s" }}>
-              <div style={{ width:20, height:20, borderRadius:"50%", border:`2px solid ${checked?T.inkSoft:T.border}`, background:checked?T.tint:"transparent", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", transition:"all 0.15s" }}>
-                {checked && <span style={{ color:T.inkWarm, fontSize:11, fontWeight:700 }}>✓</span>}
-              </div>
-              <p style={{ fontSize:13, color:checked?T.muted:T.ink, textDecoration:checked?"line-through":"none", lineHeight:1.5, fontWeight:checked?400:400 }}>{h}</p>
+            <div key={i} style={{ padding:"14px 18px", borderBottom:i<habits.length-1?`1px solid ${T.border}`:"none", background:answered?"#FAFAF8":"#fff", transition:"background 0.15s" }}>
+              <p style={{ fontSize:13, color:answered?T.muted:T.ink, lineHeight:1.55, marginBottom:answered?6:10, fontWeight:400 }}>{h.q}</p>
+              {answered ? (
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={{ background:answer?T.tint:"#FFF5F5", border:`1px solid ${answer?T.tintBorder:"#F0C0C0"}`, borderRadius:20, padding:"3px 12px" }}>
+                    <p style={{ fontSize:11, color:answer?T.inkWarm:"#C04040", fontWeight:600 }}>{answer ? h.yes : h.no}</p>
+                  </div>
+                  <button onClick={()=>{const u={...habitsChecked};delete u[i];const all={...(weekData?.habits||{}),[dayKey]:u};onUpdateWeek({...weekData,habits:all});}} style={{ fontSize:10, color:T.muted, background:"transparent", border:"none", cursor:"pointer", fontFamily:"'DM Sans',sans-serif" }}>change</button>
+                </div>
+              ) : (
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={()=>toggleHabit(i,true)} style={{ flex:1, background:T.tint, border:`1px solid ${T.tintBorder}`, borderRadius:8, padding:"9px", fontSize:11, fontWeight:600, color:T.inkWarm, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", letterSpacing:"0.5px" }}>Yes</button>
+                  <button onClick={()=>toggleHabit(i,false)} style={{ flex:1, background:"#FFF5F5", border:`1px solid #F0C0C0`, borderRadius:8, padding:"9px", fontSize:11, fontWeight:600, color:"#C04040", cursor:"pointer", fontFamily:"'DM Sans',sans-serif", letterSpacing:"0.5px" }}>Not yet</button>
+                </div>
+              )}
             </div>
           );
         })}
       </div>
 
-      {/* Today's tasks (first 3) */}
+      {/* Week progress link — not a full task list, just a nudge */}
       {tasks.length>0 && (
-        <div style={{ margin:"10px 20px 0", background:"#fff", border:`1px solid ${T.border}`, borderRadius:12, padding:"14px 18px", boxShadow:T.sh }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-            <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase" }}>This week's tasks</p>
-            <p style={{ fontSize:11, color:T.muted }}>{done}/{tasks.length}</p>
+        <div style={{ margin:"10px 20px 0", background:"#fff", border:`1px solid ${T.border}`, borderRadius:12, padding:"14px 18px", boxShadow:T.sh, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div>
+            <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase", marginBottom:3 }}>This week</p>
+            <p style={{ fontSize:14, color:done===tasks.length?"#2A7A4A":T.ink, fontWeight:600 }}>
+              {done}/{tasks.length} tasks completed{done===tasks.length?" ✓":""}
+            </p>
           </div>
-          {tasks.map((t,i) => (
-            <div key={i} style={{ display:"flex", gap:10, alignItems:"flex-start", paddingBottom:i<tasks.length-1?10:0, marginBottom:i<tasks.length-1?10:0, borderBottom:i<tasks.length-1?`1px solid ${T.border}`:"none" }}>
-              <div style={{ width:16, height:16, borderRadius:4, border:`2px solid ${t.done?T.inkSoft:T.border}`, background:t.done?T.tint:"transparent", flexShrink:0, marginTop:2, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                {t.done && <span style={{ color:T.inkWarm, fontSize:10, fontWeight:700 }}>✓</span>}
-              </div>
-              <p style={{ fontSize:12, color:t.done?T.muted:T.sub, textDecoration:t.done?"line-through":"none", lineHeight:1.5 }}>{t.action}</p>
+          <div style={{ height:36, width:1, background:T.border }}/>
+          <div style={{ height:36, width:80, display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <div style={{ height:4, width:"100%", background:T.bg, borderRadius:3 }}>
+              <div style={{ height:"100%", width:`${tasks.length?(done/tasks.length)*100:0}%`, background:done===tasks.length?"#3A8A5A":T.inkSoft, borderRadius:3, transition:"width 0.4s" }}/>
             </div>
-          ))}
+          </div>
         </div>
       )}
 
