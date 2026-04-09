@@ -2331,18 +2331,6 @@ export default function App() {
           }
         } catch {}
       }
-      // 2. Try last known email from localStorage
-      try {
-        const raw = localStorage.getItem("mos_last_email");
-        if (raw) {
-          const lastEmail = JSON.parse(raw);
-          const rawProfile = localStorage.getItem(`mos_${lastEmail.toLowerCase().replace(/[^a-z0-9]/g,"_")}_profile`);
-          if (rawProfile) {
-            await loadUserData(lastEmail);
-            return;
-          }
-        }
-      } catch {}
       setAppState("intro");
     })();
   }, []);
