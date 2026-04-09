@@ -279,7 +279,7 @@ const db = {
     const sb = getSupabase();
     if (sb) {
       try {
-        const { data } = await sb.from("user_data").select("value").eq("email", email).eq("key", k).single();
+        const { data } = await sb.from("user_data").select("value").eq("email", email).eq("key", k).maybeSingle();
         return data?.value ?? null;
       } catch { return null; }
     }
