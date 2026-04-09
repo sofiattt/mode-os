@@ -1,8 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import { createClient } from '@supabase/supabase-js';
-window.__SUPABASE_URL__ = process.env.REACT_APP_SUPABASE_URL || "";
-window.__SUPABASE_KEY__ = process.env.REACT_APP_SUPABASE_KEY || "";
-window.supabase = { createClient };
 
 const T = {
   bg:"#F5F2ED", bgCard:"#FFFFFF",
@@ -256,18 +252,68 @@ function calcModeScores(answers) {
   return scores;
 }
 
+// ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
+// Initialised lazily so the app still renders if env vars aren't set yet
+function getSupabase() {
+  // CRA uses process.env.REACT_APP_* — Vite would use import.meta.env.VITE_*
+  const url = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_URL)
+    || window.__SUPABASE_URL__ || "";
+  const key = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_KEY)
+    || window.__SUPABASE_KEY__ || "";
+  if (!url || !key) return null;
+  try {
+    if (window._sbClient) return window._sbClient;
+    if (window.supabase?.createClient) {
+      window._sbClient = window.supabase.createClient(url, key);
+      return window._sbClient;
+    }
+    return null;
+  } catch { return null; }
+}
+
+// db — reads/writes from Supabase if available, falls back to localStorage
 const db = {
-  key: (email, k) => `mos_${email.toLowerCase().replace(/[^a-z0-9]/g,"_")}_${k}`,
+  _lsKey: (email, k) => `mos_${email.toLowerCase().replace(/[^a-z0-9]/g,"_")}_${k}`,
+
   async get(email, k) {
-    try {
-      const val = localStorage.getItem(db.key(email, k));
-      return val ? JSON.parse(val) : null;
-    } catch { return null; }
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const { data } = await sb.from("user_data").select("value").eq("email", email).eq("key", k).single();
+        return data?.value ?? null;
+      } catch {}
+    }
+    // localStorage fallback
+    try { const v = localStorage.getItem(db._lsKey(email,k)); return v ? JSON.parse(v) : null; } catch { return null; }
   },
+
   async set(email, k, v) {
-    try { localStorage.setItem(db.key(email, k), JSON.stringify(v)); } catch {}
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        await sb.from("user_data").upsert({ email, key: k, value: v, updated_at: new Date().toISOString() }, { onConflict: "email,key" });
+        return;
+      } catch {}
+    }
+    // localStorage fallback
+    try { localStorage.setItem(db._lsKey(email,k), JSON.stringify(v)); } catch {}
+  },
+
+  // Migrate any existing localStorage data to Supabase for this email
+  async migrate(email) {
+    const sb = getSupabase(); if (!sb) return;
+    for (const k of ["profile","history","week","weekHistory"]) {
+      try {
+        const local = localStorage.getItem(db._lsKey(email,k));
+        if (!local) continue;
+        const val = JSON.parse(local);
+        await sb.from("user_data").upsert({ email, key: k, value: val, updated_at: new Date().toISOString() }, { onConflict: "email,key" });
+      } catch {}
+    }
   },
 };
+
+
 
 // ─── PATTERN INTELLIGENCE ─────────────────────────────────────────────────────
 function analysePatterns(history, weekHistory, currentModeId) {
@@ -439,9 +485,10 @@ async function fetchStrategy(profile, modeId, patterns) {
     `}`,
   ].filter(s => s !== "").join("\n");
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1400, messages:[{role:"user",content:prompt}] }),
+  const res = await fetch("/api/strategy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1400, messages: [{ role: "user", content: prompt }] }),
   });
   const data = await res.json();
   return JSON.parse((data.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim());
@@ -516,12 +563,19 @@ function SL({ ch, color }) { return <p style={{ fontSize:9, letterSpacing:4, col
 function StepBar({ n, total }) { return <div style={{ display:"flex", gap:6, marginBottom:32 }}>{Array.from({length:total},(_,i)=><div key={i} style={{ flex:1, height:2, borderRadius:1, background:i<n?T.inkSoft:T.border, transition:"background 0.4s" }}/>)}</div>; }
 
 function TabBar({ tab, setTab }) {
-  const tabs=[{id:"dashboard",icon:"◈",label:"Mode"},{id:"week",icon:"☐",label:"Week"},{id:"history",icon:"◎",label:"Arc"},{id:"pulse",icon:"⊙",label:"Pulse"},{id:"share",icon:"↗",label:"Share"}];
+  const tabs=[
+    {id:"dashboard", icon:"◈", label:"Mode"},
+    {id:"today",     icon:"◎", label:"Today"},
+    {id:"week",      icon:"☐", label:"Week"},
+    {id:"history",   icon:"↻", label:"Arc"},
+    {id:"pulse",     icon:"⊙", label:"Pulse"},
+    {id:"share",     icon:"↗", label:"Share"},
+  ];
   return (
     <div style={{ position:"fixed", bottom:0, left:0, right:0, background:"#fff", borderTop:`1px solid ${T.border}`, display:"flex", zIndex:100, boxShadow:"0 -4px 20px rgba(15,12,10,0.07)" }}>
       {tabs.map(t=>(
-        <button key={t.id} onClick={()=>setTab(t.id)} style={{ flex:1, padding:"9px 0 11px", background:"transparent", border:"none", borderTop:`2px solid ${tab===t.id?T.inkSoft:"transparent"}`, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontSize:8, letterSpacing:"1.2px", textTransform:"uppercase", color:tab===t.id?T.inkWarm:T.muted, fontWeight:tab===t.id?500:400, transition:"all 0.15s" }}>
-          <div style={{ fontSize:14, marginBottom:2 }}>{t.icon}</div>{t.label}
+        <button key={t.id} onClick={()=>setTab(t.id)} style={{ flex:1, padding:"8px 0 10px", background:"transparent", border:"none", borderTop:`2px solid ${tab===t.id?T.inkSoft:"transparent"}`, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontSize:7, letterSpacing:"0.8px", textTransform:"uppercase", color:tab===t.id?T.inkWarm:T.muted, fontWeight:tab===t.id?500:400, transition:"all 0.15s" }}>
+          <div style={{ fontSize:13, marginBottom:2 }}>{t.icon}</div>{t.label}
         </button>
       ))}
     </div>
@@ -557,20 +611,76 @@ function TimerCard({ seconds, label, onDone, onClose }) {
 
 function SoftLogin({ onLogin }) {
   const savedEmail = (() => { try { const s=localStorage.getItem("mos_last_email"); return s?JSON.parse(s):""; } catch { return ""; } })();
+  const [step, setStep] = useState("email");
   const [email, setEmail] = useState(savedEmail);
+  const [password, setPassword] = useState("");
+  const [isNew, setIsNew] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [isReturning, setIsReturning] = useState(null);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+  const sb = getSupabase();
 
-  const handle = async () => {
+  const handleEmailNext = () => {
+    if (!email.trim().toLowerCase().includes("@")) return;
+    setStep("password"); // always show password step
+  };
+
+  const handleAuth = async () => {
     const e = email.trim().toLowerCase();
-    if (!e || !e.includes("@")) return;
-    setLoading(true);
-    try { const ex = await db.get(e, "profile"); setIsReturning(!!ex); } catch { setIsReturning(false); }
-    setConfirming(true);
-    setLoading(false);
+    if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    setLoading(true); setError("");
+    const sb = getSupabase();
+    if (!sb) {
+      // No Supabase — accept any password as a local passphrase, store it hashed in localStorage
+      const stored = localStorage.getItem("mos_pw_" + e);
+      if (!stored) {
+        localStorage.setItem("mos_pw_" + e, password);
+        await db.migrate(e);
+      } else if (stored !== password) {
+        setError("Wrong password. Try again."); setLoading(false); return;
+      }
+      try { localStorage.setItem("mos_last_email", JSON.stringify(e)); } catch {}
+      setDone(true); setLoading(false); onLogin(e); return;
+    }
+    if (isNew) {
+      const { error: err } = await sb.auth.signUp({ email: e, password });
+      if (err) {
+        if (err.message?.toLowerCase().includes("already")) { setIsNew(false); setError("Account exists. Enter your password to sign in."); }
+        else setError(err.message);
+        setLoading(false); return;
+      }
+      await db.migrate(e);
+    } else {
+      const { error: err } = await sb.auth.signInWithPassword({ email: e, password });
+      if (err) {
+        if (err.message?.toLowerCase().includes("invalid") || err.message?.toLowerCase().includes("credentials")) setError("Wrong password. Try again.");
+        else { setIsNew(true); setError("No account found. Create one below."); }
+        setLoading(false); return;
+      }
+    }
+    try { localStorage.setItem("mos_last_email", JSON.stringify(e)); } catch {}
+    setDone(true); setLoading(false);
     onLogin(e);
   };
+
+  const btnStyle = (disabled) => ({
+    width:"100%", background:disabled?"#E0D8CE":"#0F0C0A", color:disabled?"#A09080":"#FAF7F4",
+    border:"none", borderRadius:4, padding:"15px 24px", fontSize:11, letterSpacing:"1.6px",
+    textTransform:"uppercase", fontWeight:500, cursor:disabled?"not-allowed":"pointer",
+    fontFamily:"'DM Sans',sans-serif", minHeight:50, touchAction:"manipulation",
+    WebkitTapHighlightColor:"rgba(0,0,0,0)", marginBottom:10,
+  });
+
+  if (done) return (
+    <div style={{ fontFamily:"'DM Sans',sans-serif", background:T.bg, minHeight:"100vh", display:"flex", flexDirection:"column", justifyContent:"center", alignItems:"center", padding:"40px 28px" }}>
+      <div style={{ maxWidth:380, width:"100%", textAlign:"center" }}>
+        <LogoLockup size="md" iconVariant="dark"/>
+        <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:42, fontWeight:300, color:T.ink, margin:"32px 0 12px" }}>&#10003;</p>
+        <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, fontWeight:300, color:T.ink, marginBottom:8 }}>{isNew ? "Account created." : "Welcome back."}</h2>
+        <p style={{ fontSize:13, color:T.muted }}>{email}</p>
+      </div>
+    </div>
+  );
 
   return (
     <div style={{ fontFamily:"'DM Sans',sans-serif", background:T.bg, minHeight:"100vh", display:"flex", flexDirection:"column", justifyContent:"center", alignItems:"center", padding:"40px 28px", position:"relative", overflow:"hidden" }}>
@@ -578,50 +688,36 @@ function SoftLogin({ onLogin }) {
       <div style={{ maxWidth:380, width:"100%" }}>
         <LogoLockup size="md" iconVariant="dark"/>
         <p style={{ fontSize:11, color:T.muted, marginBottom:40, marginTop:4, letterSpacing:1 }}>Your career OS</p>
-        {!confirming ? (
+
+        {step === "email" ? (
           <>
             <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>{savedEmail ? "Welcome back." : "Your email."}</h2>
-            <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>{savedEmail ? "Your profile will load automatically." : "Returning? Your profile loads automatically. New here? You'll set up your profile next."}</p>
-            <input
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              onKeyDown={e => e.key==="Enter" && handle()}
-              placeholder="your@email.com"
-              type="email"
-              autoCapitalize="none"
-              autoComplete="email"
-              style={{ ...INP, marginBottom:12, fontSize:16 }}
-            />
-            <button
-              type="button"
-              onClick={() => handle()}
-              disabled={!email.includes("@") || loading}
-              style={{
-                width:"100%", background:(!email.includes("@")||loading)?"#E0D8CE":"#0F0C0A",
-                color:(!email.includes("@")||loading)?"#A09080":"#FAF7F4",
-                border:"none", borderRadius:4, padding:"15px 24px",
-                fontSize:11, letterSpacing:"1.6px", textTransform:"uppercase", fontWeight:500,
-                cursor:(!email.includes("@")||loading)?"not-allowed":"pointer",
-                fontFamily:"'DM Sans',sans-serif",
-                boxShadow:(!email.includes("@")||loading)?"none":"0 2px 8px rgba(15,12,10,0.22)",
-                minHeight:50, WebkitTapHighlightColor:"rgba(0,0,0,0)", touchAction:"manipulation",
-                display:"block", opacity:(!email.includes("@")||loading)?0.6:1,
-              }}
-            >{loading ? "Checking..." : "Continue →"}</button>
-            <p style={{ fontSize:11, color:T.muted, textAlign:"center", marginTop:16, lineHeight:1.7 }}>No password. Data saved to this device.</p>
+            <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>{savedEmail ? "Sign in to pick up where you left off — your profile, tasks, and history." : "Create a free account to save your profile and access it from any device."}</p>
+            <input value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleEmailNext()} placeholder="your@email.com" type="email" autoCapitalize="none" autoComplete="email" style={{ ...INP, marginBottom:12, fontSize:16 }}/>
+            <button type="button" onClick={handleEmailNext} disabled={!email.includes("@")} style={btnStyle(!email.includes("@"))}>Continue &#8594;</button>
+            <p style={{ fontSize:11, color:T.muted, textAlign:"center", marginTop:6 }}>Your data syncs across all your devices.</p>
           </>
         ) : (
-          <div style={{ textAlign:"center" }}>
-            <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:40, fontWeight:300, color:T.ink, marginBottom:16 }}>✓</p>
-            <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, fontWeight:300, color:T.ink, marginBottom:8 }}>{isReturning ? "Welcome back." : "Welcome."}</h2>
-            <p style={{ fontSize:14, color:T.sub, marginBottom:6 }}>{email}</p>
-            <p style={{ fontSize:13, color:T.muted }}>{isReturning ? "Loading your profile, tasks, and history." : "Setting up your profile next."}</p>
-          </div>
+          <>
+            <button type="button" onClick={()=>{setStep("email");setError("");}} style={{ background:"transparent", border:"none", fontSize:12, color:T.muted, cursor:"pointer", marginBottom:20, fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>&#8592; {email}</button>
+            <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>{isNew ? "Create a password." : "Enter your password."}</h2>
+            <p style={{ fontSize:14, color:T.sub, marginBottom:20, lineHeight:1.8 }}>{isNew ? "Secures your profile so you can access it anywhere." : "Your profile, tasks, and history will load across all devices."}</p>
+            {!isNew && savedEmail === email.trim().toLowerCase() && (
+              <div style={{ background:T.tint, border:`1px solid ${T.tintBorder}`, borderRadius:8, padding:"11px 14px", marginBottom:16 }}>
+                <p style={{ fontSize:12, color:T.inkWarm, lineHeight:1.6 }}>Your existing data on this device will sync to your account automatically.</p>
+              </div>
+            )}
+            <input value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleAuth()} placeholder={isNew?"Create a password (min 6 chars)":"Your password"} type="password" autoComplete={isNew?"new-password":"current-password"} style={{ ...INP, marginBottom:error?8:12, fontSize:16 }}/>
+            {error && <p style={{ fontSize:12, color:"#C04040", marginBottom:12, lineHeight:1.5 }}>{error}</p>}
+            <button type="button" onClick={handleAuth} disabled={loading||password.length<6} style={btnStyle(loading||password.length<6)}>{loading?(isNew?"Creating account...":"Signing in..."):(isNew?"Create Account &#8594;":"Sign In &#8594;")}</button>
+            <button type="button" onClick={()=>{setIsNew(!isNew);setError("");}} style={{ width:"100%", background:"transparent", border:`1px solid ${T.border}`, borderRadius:4, padding:"13px 24px", fontSize:11, letterSpacing:"1.2px", textTransform:"uppercase", color:T.sub, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", minHeight:50, touchAction:"manipulation" }}>{isNew?"Already have an account? Sign in":"New here? Create an account"}</button>
+          </>
         )}
       </div>
     </div>
   );
 }
+
 
 function CheckInSheet({ onStay, onSwitch, onClose }) {
   const [answers, setAnswers] = useState({});
@@ -700,48 +796,79 @@ function FocusStyleSheet({ current, onSave, onClose }) {
   );
 }
 
-// Generate a smart prompt based on what the task is about
-function smartPrompt(action) {
+// Generate structured fields based on what the task is about
+function getStructuredPrompts(action) {
   const a = (action||"").toLowerCase();
-  if (a.includes("pick") && a.includes("lane")) return "Which lane did you pick?";
-  if (a.includes("lane") || a.includes("focus")) return "What did you focus on?";
-  if (a.includes("ship") || a.includes("publish") || a.includes("post") || a.includes("share")) return "What did you put out?";
-  if (a.includes("reach") || a.includes("message") || a.includes("email") || a.includes("contact")) return "Who did you reach out to?";
-  if (a.includes("write") || a.includes("draft")) return "What did you write?";
-  if (a.includes("fix") || a.includes("system") || a.includes("broken")) return "What did you fix?";
-  if (a.includes("drop") || a.includes("stop") || a.includes("remove") || a.includes("cut")) return "What did you let go of?";
-  if (a.includes("reflect") || a.includes("review") || a.includes("audit")) return "What did you notice?";
-  if (a.includes("rest") || a.includes("sleep") || a.includes("recover")) return "How did you rest?";
-  if (a.includes("timer") || a.includes("minute") || a.includes("session")) return "What did you get done in the time?";
-  return "What did you make progress on?";
+  if (a.includes("reach out") || a.includes("message") || a.includes("email") || a.includes("contact") || a.includes("collaborat"))
+    return [{ key:"who",    label:"Who did you reach out to?" }, { key:"outcome", label:"What was the outcome?" }];
+  if (a.includes("ship") || a.includes("publish") || a.includes("post") || a.includes("share") || a.includes("send"))
+    return [{ key:"what",   label:"What did you put out?" },     { key:"response", label:"Any early response or reaction?" }];
+  if (a.includes("pick") || a.includes("choose") || a.includes("decide") || a.includes("commit"))
+    return [{ key:"choice", label:"What did you decide?" },      { key:"why",     label:"Why this, not the others?" }];
+  if (a.includes("write") || a.includes("draft") || a.includes("doc") || a.includes("copy"))
+    return [{ key:"what",   label:"What did you write?" },       { key:"next",    label:"What's the next step on it?" }];
+  if (a.includes("fix") || a.includes("system") || a.includes("broken") || a.includes("organize"))
+    return [{ key:"fixed",  label:"What did you fix or sort?" }, { key:"impact",  label:"How does this unblock you?" }];
+  if (a.includes("drop") || a.includes("stop") || a.includes("remove") || a.includes("cut") || a.includes("pause"))
+    return [{ key:"dropped",label:"What did you let go of?" },   { key:"feel",    label:"How does it feel?" }];
+  if (a.includes("review") || a.includes("reflect") || a.includes("audit") || a.includes("look"))
+    return [{ key:"notice", label:"What did you notice?" },      { key:"action",  label:"What's one thing to act on?" }];
+  if (a.includes("rest") || a.includes("sleep") || a.includes("recover") || a.includes("break"))
+    return [{ key:"how",    label:"How did you rest?" },         { key:"feel",    label:"How do you feel after?" }];
+  if (a.includes("build") || a.includes("create") || a.includes("make") || a.includes("design"))
+    return [{ key:"what",   label:"What did you build or make?" },{ key:"next",   label:"What's the next piece?" }];
+  // Default: single guided question
+  return [{ key:"note",    label:"What did you make progress on?" }];
 }
 
 function NoteSheet({ task, onSave, onClose }) {
-  const [note, setNote] = useState(task.note||"");
-  const inputRef = useRef(null);
-  useEffect(() => { setTimeout(()=>inputRef.current?.focus(), 100); }, []);
-  const save = () => { onSave(note.trim()); onClose(); };
+  const fields = getStructuredPrompts(task.action);
+  const [vals, setVals] = useState(() => {
+    // Pre-fill from existing note if it exists
+    const existing = task.note || "";
+    if (fields.length === 1) return { [fields[0].key]: existing };
+    // Try to split existing note by " · "
+    const parts = existing.split(" · ");
+    return fields.reduce((acc, f, i) => ({ ...acc, [f.key]: parts[i] || "" }), {});
+  });
+  const firstRef = useRef(null);
+  useEffect(() => { setTimeout(() => firstRef.current?.focus(), 120); }, []);
+
+  const save = () => {
+    const combined = fields.map(f => vals[f.key]||"").filter(Boolean).join(" · ");
+    onSave(combined.trim());
+    onClose();
+  };
+  const allEmpty = fields.every(f => !(vals[f.key]||"").trim());
+
   return (
     <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{ position:"fixed", inset:0, background:"rgba(8,6,4,0.65)", zIndex:250, display:"flex", flexDirection:"column", justifyContent:"flex-end", fontFamily:"'DM Sans',sans-serif" }}>
       <div style={{ background:"#fff", borderRadius:"20px 20px 0 0", padding:"22px 22px 40px" }}>
         <div style={{ width:36, height:3, background:T.border, borderRadius:2, margin:"0 auto 18px" }}/>
-        {/* Task label */}
-        <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase", marginBottom:8 }}>Task</p>
-        <p style={{ fontSize:13, color:T.sub, lineHeight:1.55, marginBottom:20, fontStyle:"italic" }}>{task.action}</p>
-        {/* Smart prompt */}
-        <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:24, fontWeight:300, color:T.ink, marginBottom:14, lineHeight:1.3 }}>{smartPrompt(task.action)}</p>
-        <textarea
-          ref={inputRef}
-          value={note}
-          onChange={e=>setNote(e.target.value)}
-          placeholder="Keep it short. One or two lines is enough."
-          onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); save(); } }}
-          style={{ width:"100%", background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:8, padding:"13px 14px", fontSize:14, color:T.ink, fontFamily:"'DM Sans',sans-serif", outline:"none", resize:"none", minHeight:80, lineHeight:1.6 }}
-        />
-        <p style={{ fontSize:11, color:T.muted, marginTop:6, marginBottom:18 }}>Enter to save · Shift+Enter for new line</p>
+        {/* Task */}
+        <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase", marginBottom:6 }}>Task</p>
+        <p style={{ fontSize:13, color:T.sub, lineHeight:1.55, marginBottom:20, fontStyle:"italic", textDecoration:"line-through" }}>{task.action}</p>
+        {/* Structured fields */}
+        <div style={{ display:"flex", flexDirection:"column", gap:16, marginBottom:18 }}>
+          {fields.map((f, i) => (
+            <div key={f.key}>
+              <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, fontWeight:300, color:T.ink, marginBottom:10, lineHeight:1.3 }}>{f.label}</p>
+              <textarea
+                ref={i===0 ? firstRef : null}
+                value={vals[f.key]||""}
+                onChange={e=>setVals(p=>({...p,[f.key]:e.target.value}))}
+                placeholder="Keep it short."
+                onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey&&i===fields.length-1){ e.preventDefault(); save(); } }}
+                rows={2}
+                style={{ width:"100%", background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:8, padding:"11px 13px", fontSize:14, color:T.ink, fontFamily:"'DM Sans',sans-serif", outline:"none", resize:"none", lineHeight:1.6 }}
+              />
+            </div>
+          ))}
+        </div>
+        <p style={{ fontSize:11, color:T.muted, marginBottom:16 }}>Enter on last field to save · Shift+Enter for new line</p>
         <div style={{ display:"flex", gap:10 }}>
           <Btn variant="ghost" onClick={onClose}>Skip</Btn>
-          <div style={{ flex:1 }}><Btn onClick={save} full>Save Note →</Btn></div>
+          <div style={{ flex:1 }}><Btn onClick={save} disabled={allEmpty} full>Save →</Btn></div>
         </div>
       </div>
     </div>
@@ -971,12 +1098,12 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
   const calloutText = strategy?.callout||mode.callouts[0];
   const [timer, setTimer] = useState(null);
 
-  // Seed fallback tasks immediately; replace with AI tasks when available
+  // Seed category-intelligent fallback tasks immediately
   useEffect(() => {
     if (!weekData?.tasks || weekData.tasks.length === 0) {
-      const styleKey = isLight ? "light" : "deep";
-      const fallback = (FALLBACK_TASKS[styleKey][profile.modeId]||FALLBACK_TASKS.deep.build).map(t=>({...t,done:false}));
-      onUpdateWeek({ week:weekKey(), tasks:fallback });
+      const category = inferCategory(profile.title, profile.skills);
+      const fallback = getCategoryTasks(category, profile.modeId, profile.title);
+      onUpdateWeek({ week:weekKey(), tasks: isLight ? fallback.slice(0,4) : fallback });
     }
   }, [profile.modeId, profile.focusStyle]);
 
@@ -1173,7 +1300,7 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
   );
 }
 
-function ThisWeek({ profile, weekData, onUpdateWeek, strategy }) {
+function ThisWeek({ profile, weekData, onUpdateWeek, strategy, onReview }) {
   const mode = MODES[profile.modeId]||MODES.build;
   const isLight = profile.focusStyle==="light";
   const tasks = weekData?.tasks||[];
@@ -1183,9 +1310,9 @@ function ThisWeek({ profile, weekData, onUpdateWeek, strategy }) {
 
   useEffect(() => {
     if (!weekData?.tasks || weekData.tasks.length === 0) {
-      const styleKey = isLight ? "light" : "deep";
-      const fallback = (FALLBACK_TASKS[styleKey][profile.modeId]||FALLBACK_TASKS.deep.build).map(t=>({...t,done:false}));
-      onUpdateWeek({ week:weekKey(), tasks:fallback });
+      const category = inferCategory(profile.title, profile.skills);
+      const fallback = getCategoryTasks(category, profile.modeId, profile.title);
+      onUpdateWeek({ week:weekKey(), tasks: isLight ? fallback.slice(0,4) : fallback });
     }
   }, [profile.modeId, profile.focusStyle]);
 
@@ -1226,6 +1353,14 @@ function ThisWeek({ profile, weekData, onUpdateWeek, strategy }) {
         </div>
       )}
       {tasks.length>0 && <p style={{ fontSize:11, color:T.muted, textAlign:"center", marginTop:14, lineHeight:1.8 }}>Resets in {dl} day{dl!==1?"s":""} · new tasks each week</p>}
+      {/* Weekly Review — show when close to end of week */}
+      {dl<=2 && onReview && (
+        <div style={{ margin:"16px 0 0", background:T.tint, border:`1.5px solid ${T.tintBorder}`, borderRadius:12, padding:"16px 18px" }}>
+          <p style={{ fontSize:12, color:T.inkWarm, fontWeight:600, marginBottom:4 }}>Week ending soon.</p>
+          <p style={{ fontSize:13, color:T.sub, lineHeight:1.7, marginBottom:14 }}>Do a quick review — what worked, what didn't — and Mode OS resets your next week automatically.</p>
+          <Btn onClick={onReview} variant="soft" full>Weekly Review + Next Week Reset →</Btn>
+        </div>
+      )}
       {timer && <TimerCard seconds={timer.seconds} label={timer.label} onDone={()=>{toggle(timer.idx);setTimer(null);}} onClose={()=>setTimer(null)}/>}
     </div>
   );
@@ -1601,6 +1736,513 @@ function Pulse({ profile, strategy }) {
 }
 
 
+// ─── WEEKLY FOCUS ─────────────────────────────────────────────────────────────
+function WeeklyFocus({ profile, weekData, onUpdateWeek, strategy, onCapture }) {
+  const mode = MODES[profile.modeId]||MODES.build;
+  const isLight = profile.focusStyle==="light";
+  const priorities = weekData?.priorities || ["","",""];
+  const [editing, setEditing] = useState(null);
+  const [draft, setDraft] = useState("");
+  const tasks = weekData?.tasks||[];
+  const done = tasks.filter(t=>t.done).length;
+
+  // Auto-seed priorities from category intelligence if empty
+  useEffect(() => {
+    if (weekData && !priorities.some(p=>p)) {
+      const category = inferCategory(profile.title, profile.skills);
+      const suggested = getCategoryTasks(category, profile.modeId, profile.title).slice(0,3).map(t=>t.action);
+      onUpdateWeek({...weekData, priorities: suggested});
+    }
+  }, [profile.modeId]);
+
+  const savePriority = (idx, val) => {
+    const updated = [...priorities];
+    updated[idx] = val.trim();
+    onUpdateWeek({...weekData, priorities: updated});
+    setEditing(null);
+  };
+
+  const promoteToPriority = (taskAction) => {
+    const updated = [...priorities];
+    const empty = updated.findIndex(p => !p);
+    if (empty !== -1) { updated[empty] = taskAction; onUpdateWeek({...weekData, priorities: updated}); }
+  };
+
+  // Mode-aware priority labels
+  const label = { build:"Ship", stabilize:"Fix", pivot:"Test", focus:"Do", expand:"Push", refine:"Sharpen", rest:"Protect" }[profile.modeId] || "Priority";
+
+  return (
+    <div style={{ padding:"32px 20px 100px", maxWidth:480, margin:"0 auto", fontFamily:"'DM Sans',sans-serif" }}>
+      <p style={{ fontSize:9, letterSpacing:4, color:T.inkSoft, textTransform:"uppercase", marginBottom:4 }}>⊡ This Week's Focus</p>
+      <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:30, fontWeight:300, color:T.ink, marginBottom:4 }}>Three things. That's it.</h2>
+      <p style={{ fontSize:13, color:T.sub, marginBottom:6, lineHeight:1.7 }}>Not your task list. Not your goals. Your three non-negotiables for this week.</p>
+
+      {/* Mode context */}
+      <div style={{ background:mode.moodBg, border:`1px solid ${mode.moodBorder}`, borderRadius:8, padding:"10px 14px", marginBottom:20, display:"flex", alignItems:"center", gap:8 }}>
+        <span style={{ fontSize:14 }}>{mode.emoji}</span>
+        <p style={{ fontSize:12, color:mode.moodColor, fontWeight:600 }}>{mode.behavior}</p>
+      </div>
+
+      {/* 3 Priority slots */}
+      <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:20 }}>
+        {[0,1,2].map(idx => {
+          const val = priorities[idx]||"";
+          const isEditing = editing === idx;
+          return (
+            <div key={idx} style={{ background:"#fff", border:`2px solid ${val ? T.tintBorder : T.border}`, borderRadius:12, padding:"16px 18px", boxShadow:val?T.shMd:T.sh, transition:"all 0.15s" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:isEditing?12:0 }}>
+                <div style={{ width:24, height:24, borderRadius:"50%", background:val?T.ink:T.bg, border:`2px solid ${val?T.ink:T.border}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                  <span style={{ fontSize:10, fontWeight:700, color:val?"#FAF7F4":T.muted }}>{idx+1}</span>
+                </div>
+                {!isEditing ? (
+                  <p onClick={()=>{ setEditing(idx); setDraft(val); }} style={{ flex:1, fontSize:14, color:val?T.ink:T.muted, fontStyle:val?"normal":"italic", cursor:"pointer", lineHeight:1.5, fontWeight:val?500:400 }}>
+                    {val || `${label} ${idx+1} — tap to set`}
+                  </p>
+                ) : (
+                  <p style={{ flex:1, fontSize:11, color:T.muted, letterSpacing:1 }}>editing...</p>
+                )}
+                {val && !isEditing && (
+                  <button type="button" onClick={()=>{ const u=[...priorities]; u[idx]=""; onUpdateWeek({...weekData,priorities:u}); }} style={{ background:"transparent", border:"none", fontSize:14, color:T.muted, cursor:"pointer", padding:"0 4px" }}>×</button>
+                )}
+              </div>
+              {isEditing && (
+                <div>
+                  <textarea
+                    value={draft} onChange={e=>setDraft(e.target.value)}
+                    placeholder="Write the one thing that must happen..."
+                    autoFocus
+                    style={{ width:"100%", background:T.bg, border:`1.5px solid ${T.tintBorder}`, borderRadius:8, padding:"11px 12px", fontSize:14, color:T.ink, fontFamily:"'DM Sans',sans-serif", outline:"none", resize:"none", minHeight:72, lineHeight:1.6, marginBottom:8 }}
+                  />
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button type="button" onClick={()=>setEditing(null)} style={{ background:"transparent", border:`1px solid ${T.border}`, borderRadius:6, padding:"9px 14px", fontSize:11, letterSpacing:"1px", textTransform:"uppercase", color:T.muted, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>Cancel</button>
+                    <button type="button" onClick={()=>savePriority(idx,draft)} style={{ flex:1, background:T.ink, border:"none", borderRadius:6, padding:"9px", fontSize:11, letterSpacing:"1.5px", textTransform:"uppercase", color:"#FAF7F4", cursor:"pointer", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>Save →</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* AI suggested focus lane as a quick-add */}
+      {strategy?.focusLane && !priorities.some(p=>p) && (
+        <div style={{ background:T.tint, border:`1px solid ${T.tintBorder}`, borderRadius:10, padding:"13px 16px", marginBottom:16 }}>
+          <p style={{ fontSize:11, color:T.inkSoft, marginBottom:8 }}>✦ Suggested by your mode analysis:</p>
+          <p style={{ fontSize:13, color:T.inkWarm, fontWeight:500, marginBottom:10 }}>Make progress on your {strategy.focusLane} lane this week</p>
+          <button type="button" onClick={()=>promoteToPriority("Make progress on my " + strategy.focusLane + " lane")} style={{ background:T.inkWarm, border:"none", borderRadius:4, padding:"9px 16px", fontSize:10, letterSpacing:"1.5px", textTransform:"uppercase", color:"#FAF7F4", cursor:"pointer", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>Add as Priority 1 →</button>
+        </div>
+      )}
+
+      {/* Task progress */}
+      {tasks.length > 0 && (
+        <div style={{ background:"#fff", border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 18px", boxShadow:T.sh }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
+            <p style={{ fontSize:12, color:T.sub, fontWeight:500 }}>Weekly tasks</p>
+            <p style={{ fontSize:12, color:done===tasks.length?"#2A7A4A":T.muted, fontWeight:done===tasks.length?600:400 }}>{done}/{tasks.length}{done===tasks.length?" ✓":""}</p>
+          </div>
+          <div style={{ height:4, background:T.bg, borderRadius:3 }}>
+            <div style={{ height:"100%", width:`${tasks.length?(done/tasks.length)*100:0}%`, background:done===tasks.length?"#3A8A5A":T.inkSoft, borderRadius:3, transition:"width 0.4s" }}/>
+          </div>
+          <p style={{ fontSize:11, color:T.muted, marginTop:8 }}>Go to Mode tab to check off tasks</p>
+        </div>
+      )}
+
+      {/* Quick capture button */}
+      <div style={{ marginTop:12 }}>
+        <button type="button" onClick={onCapture} style={{ width:"100%", background:"transparent", border:`1px solid ${T.border}`, borderRadius:10, padding:"14px", fontSize:12, color:T.sub, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation", textAlign:"left" }}>
+          ✎ Got something in your head? Drop it in Capture →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── CAPTURE (Brain Dump) ─────────────────────────────────────────────────────
+function Capture({ profile, weekData, onUpdateWeek, onAddToPriority }) {
+  const [text, setText] = useState("");
+  const [saved, setSaved] = useState(false);
+  const captures = weekData?.captures || [];
+
+  const save = () => {
+    if (!text.trim()) return;
+    const entry = { id: Date.now(), text: text.trim(), ts: new Date().toISOString(), promoted: false };
+    onUpdateWeek({...weekData, captures: [entry, ...captures]});
+    setText(""); setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const promote = (entry) => {
+    const priorities = weekData?.priorities || ["","",""];
+    const empty = priorities.findIndex(p => !p);
+    if (empty === -1) return;
+    const updated = [...priorities];
+    updated[empty] = entry.text;
+    const updatedCaptures = captures.map(c => c.id===entry.id ? {...c,promoted:true} : c);
+    onUpdateWeek({...weekData, priorities: updated, captures: updatedCaptures});
+  };
+
+  const remove = (id) => onUpdateWeek({...weekData, captures: captures.filter(c=>c.id!==id)});
+
+  return (
+    <div style={{ padding:"32px 20px 100px", maxWidth:480, margin:"0 auto", fontFamily:"'DM Sans',sans-serif" }}>
+      <p style={{ fontSize:9, letterSpacing:4, color:T.inkSoft, textTransform:"uppercase", marginBottom:4 }}>✎ Capture</p>
+      <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:30, fontWeight:300, color:T.ink, marginBottom:4 }}>Brain dump.</h2>
+      <p style={{ fontSize:13, color:T.sub, marginBottom:20, lineHeight:1.7 }}>No structure. No pressure. Just get it out of your head.</p>
+
+      {/* Input */}
+      <div style={{ background:"#fff", border:`1.5px solid ${T.border}`, borderRadius:12, padding:"16px 18px", marginBottom:12, boxShadow:T.shMd }}>
+        <textarea
+          value={text} onChange={e=>setText(e.target.value)}
+          placeholder="What's in your head right now..."
+          style={{ width:"100%", background:"transparent", border:"none", outline:"none", fontSize:15, color:T.ink, fontFamily:"'Cormorant Garamond',serif", fontStyle:"italic", resize:"none", minHeight:100, lineHeight:1.7 }}
+        />
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", borderTop:`1px solid ${T.border}`, paddingTop:10, marginTop:4 }}>
+          <p style={{ fontSize:11, color:T.muted }}>{text.length > 0 ? `${text.length} chars` : "Tap above to start"}</p>
+          <button type="button" onClick={save} disabled={!text.trim()} style={{ background:text.trim()?T.ink:"#E0D8CE", color:text.trim()?"#FAF7F4":"#A09080", border:"none", borderRadius:4, padding:"9px 18px", fontSize:11, letterSpacing:"1.5px", textTransform:"uppercase", cursor:text.trim()?"pointer":"not-allowed", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>
+            {saved ? "Saved ✓" : "Capture →"}
+          </button>
+        </div>
+      </div>
+
+      {/* Saved captures */}
+      {captures.length > 0 && (
+        <>
+          <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:12 }}>Captured ({captures.length})</p>
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {captures.map(entry => (
+              <div key={entry.id} style={{ background:entry.promoted?"#F8FAF5":"#fff", border:`1.5px solid ${entry.promoted?"#B8D4A8":T.border}`, borderRadius:10, padding:"14px 16px", boxShadow:T.sh }}>
+                <p style={{ fontSize:14, color:entry.promoted?T.muted:T.ink, lineHeight:1.6, marginBottom:10, textDecoration:entry.promoted?"line-through":"none" }}>{entry.text}</p>
+                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <p style={{ fontSize:10, color:T.muted, flex:1 }}>{new Date(entry.ts).toLocaleDateString("en-US",{weekday:"short",hour:"2-digit",minute:"2-digit"})}</p>
+                  {!entry.promoted && (weekData?.priorities||["","",""]).some(p=>!p) && (
+                    <button type="button" onClick={()=>promote(entry)} style={{ background:T.tint, border:`1px solid ${T.tintBorder}`, borderRadius:4, padding:"5px 12px", fontSize:10, letterSpacing:"1px", textTransform:"uppercase", color:T.inkWarm, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>
+                      → Make Priority
+                    </button>
+                  )}
+                  {entry.promoted && <p style={{ fontSize:10, color:"#5A9A4A", fontWeight:600 }}>✓ In Focus</p>}
+                  <button type="button" onClick={()=>remove(entry.id)} style={{ background:"transparent", border:"none", fontSize:14, color:T.muted, cursor:"pointer", padding:"0 4px" }}>×</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {captures.length === 0 && (
+        <div style={{ textAlign:"center", padding:"40px 20px", background:"#fff", border:`1px solid ${T.border}`, borderRadius:12 }}>
+          <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, fontWeight:300, color:T.ink, marginBottom:8 }}>Nothing captured yet.</p>
+          <p style={{ fontSize:13, color:T.muted, lineHeight:1.7 }}>Use this when an idea hits. Mid-walk. Mid-shower. Mid-meeting. Capture it before it disappears.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── WEEKLY REVIEW + NEXT WEEK RESET ─────────────────────────────────────────
+const WEEK_DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+function WeeklyReview({ profile, weekData, history, weekHistory, onComplete, onClose }) {
+  const mode = MODES[profile.modeId]||MODES.build;
+  const tasks = weekData?.tasks||[];
+  const done = tasks.filter(t=>t.done);
+  const missed = tasks.filter(t=>!t.done);
+  const [step, setStep] = useState("review"); // review | reset | mode
+  const [answers, setAnswers] = useState({ completed:"", missed:"", changed:"", nextFocus:"" });
+  const [newModeAnswers, setNewModeAnswers] = useState({});
+  const allAnswered = Object.keys(newModeAnswers).length===QS.length;
+  const computedMode = allAnswered
+    ? calcMode(Object.entries(newModeAnswers).map(([qId,optIdx])=>({qId,optIdx:Number(optIdx)})))
+    : null;
+
+  const saveReview = () => {
+    onComplete({
+      reviewAnswers: answers,
+      newModeId: computedMode || profile.modeId,
+      newAnswers: newModeAnswers,
+    });
+  };
+
+  if (step === "mode") return (
+    <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{ position:"fixed", inset:0, background:"rgba(8,6,4,0.8)", zIndex:200, display:"flex", flexDirection:"column", justifyContent:"flex-end", fontFamily:"'DM Sans',sans-serif" }}>
+      <div style={{ background:"#fff", borderRadius:"20px 20px 0 0", padding:"22px 22px 48px", maxHeight:"90vh", overflowY:"auto" }}>
+        <div style={{ width:36, height:3, background:T.border, borderRadius:2, margin:"0 auto 20px" }}/>
+        <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase", marginBottom:6 }}>Next Week Reset</p>
+        <h3 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, fontWeight:300, marginBottom:6 }}>Recalculate your mode.</h3>
+        <p style={{ fontSize:13, color:T.sub, marginBottom:24, lineHeight:1.7 }}>Answer honestly. Your next week's strategy depends on this.</p>
+        {QS.map((q,qi)=>(
+          <div key={q.id} style={{ marginBottom:20 }}>
+            <p style={{ fontSize:13, color:T.ink, fontWeight:500, marginBottom:10, lineHeight:1.5 }}>{qi+1}. {q.question}</p>
+            <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
+              {q.options.map((opt,oi)=>{ const sel=newModeAnswers[q.id]===oi; return <div key={oi} onClick={()=>setNewModeAnswers(p=>({...p,[q.id]:oi}))} style={{ background:sel?T.tint:T.bg, border:`1.5px solid ${sel?T.tintBorder:T.border}`, borderRadius:7, padding:"11px 14px", cursor:"pointer", fontSize:13, color:sel?T.inkWarm:T.ink, transition:"all 0.15s" }}>{opt.label}</div>; })}
+            </div>
+          </div>
+        ))}
+        {computedMode && (
+          <div style={{ background:MODES[computedMode].moodBg, border:`1.5px solid ${MODES[computedMode].moodBorder}`, borderRadius:10, padding:"14px 18px", marginBottom:20 }}>
+            <p style={{ fontSize:9, letterSpacing:2, color:MODES[computedMode].moodColor, textTransform:"uppercase", marginBottom:4 }}>Next week's mode</p>
+            <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:26, color:MODES[computedMode].moodColor, fontWeight:400 }}>{MODES[computedMode].emoji} {MODES[computedMode].label}</p>
+            <p style={{ fontSize:12, color:MODES[computedMode].moodColor, marginTop:4, opacity:0.8 }}>{MODES[computedMode].behavior}</p>
+          </div>
+        )}
+        <div style={{ display:"flex", gap:10 }}>
+          <Btn variant="ghost" onClick={()=>setStep("reset")}>← Back</Btn>
+          <div style={{ flex:1 }}><Btn onClick={saveReview} disabled={!allAnswered} full>Start Next Week →</Btn></div>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (step === "reset") return (
+    <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{ position:"fixed", inset:0, background:"rgba(8,6,4,0.8)", zIndex:200, display:"flex", flexDirection:"column", justifyContent:"flex-end", fontFamily:"'DM Sans',sans-serif" }}>
+      <div style={{ background:"#fff", borderRadius:"20px 20px 0 0", padding:"22px 22px 48px", maxHeight:"75vh", overflowY:"auto" }}>
+        <div style={{ width:36, height:3, background:T.border, borderRadius:2, margin:"0 auto 20px" }}/>
+        <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase", marginBottom:6 }}>3 of 3</p>
+        <h3 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, fontWeight:300, marginBottom:20 }}>What changed?</h3>
+        {[{ key:"changed", label:"Anything different about your situation now vs. a week ago?" },
+          { key:"nextFocus", label:"What do you want to protect or prioritise next week?" }
+        ].map(f=>(
+          <div key={f.key} style={{ marginBottom:18 }}>
+            <p style={{ fontSize:13, color:T.ink, fontWeight:500, marginBottom:10, lineHeight:1.5 }}>{f.label}</p>
+            <textarea value={answers[f.key]} onChange={e=>setAnswers(p=>({...p,[f.key]:e.target.value}))} placeholder="Keep it honest." rows={3} style={{ width:"100%", background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:8, padding:"11px 13px", fontSize:13, color:T.ink, fontFamily:"'DM Sans',sans-serif", outline:"none", resize:"none", lineHeight:1.6 }}/>
+          </div>
+        ))}
+        <div style={{ display:"flex", gap:10 }}>
+          <Btn variant="ghost" onClick={()=>setStep("review")}>← Back</Btn>
+          <div style={{ flex:1 }}><Btn onClick={()=>setStep("mode")} full>Recalculate Mode →</Btn></div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Step 1: Review
+  return (
+    <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{ position:"fixed", inset:0, background:"rgba(8,6,4,0.8)", zIndex:200, display:"flex", flexDirection:"column", justifyContent:"flex-end", fontFamily:"'DM Sans',sans-serif" }}>
+      <div style={{ background:"#fff", borderRadius:"20px 20px 0 0", padding:"22px 22px 48px", maxHeight:"80vh", overflowY:"auto" }}>
+        <div style={{ width:36, height:3, background:T.border, borderRadius:2, margin:"0 auto 20px" }}/>
+        <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase", marginBottom:6 }}>Weekly Review · 1 of 3</p>
+        <h3 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, fontWeight:300, marginBottom:4 }}>How did this week go?</h3>
+        <p style={{ fontSize:13, color:T.sub, marginBottom:20, lineHeight:1.7 }}>Honest reflection. Then Mode OS resets your next week.</p>
+
+        {/* Task summary */}
+        <div style={{ background:mode.moodBg, border:`1px solid ${mode.moodBorder}`, borderRadius:10, padding:"14px 16px", marginBottom:20 }}>
+          <p style={{ fontSize:12, color:mode.moodColor, fontWeight:600, marginBottom:8 }}>{mode.emoji} {mode.label} · {done.length}/{tasks.length} tasks completed</p>
+          {done.length>0 && <div style={{ marginBottom:8 }}>{done.map((t,i)=><p key={i} style={{ fontSize:12, color:mode.moodColor, lineHeight:1.6 }}>✓ {t.action}</p>)}</div>}
+          {missed.length>0 && <div>{missed.map((t,i)=><p key={i} style={{ fontSize:12, color:T.muted, lineHeight:1.6 }}>☐ {t.action}</p>)}</div>}
+        </div>
+
+        {[{ key:"completed", label:"What did you actually complete this week?" },
+          { key:"missed",    label:"What didn't get done — and why?" }
+        ].map(f=>(
+          <div key={f.key} style={{ marginBottom:18 }}>
+            <p style={{ fontSize:13, color:T.ink, fontWeight:500, marginBottom:10, lineHeight:1.5 }}>{f.label}</p>
+            <textarea value={answers[f.key]} onChange={e=>setAnswers(p=>({...p,[f.key]:e.target.value}))} placeholder="Be honest. No judgment." rows={3} style={{ width:"100%", background:T.bg, border:`1.5px solid ${T.border}`, borderRadius:8, padding:"11px 13px", fontSize:13, color:T.ink, fontFamily:"'DM Sans',sans-serif", outline:"none", resize:"none", lineHeight:1.6 }}/>
+          </div>
+        ))}
+        <div style={{ display:"flex", gap:10 }}>
+          <Btn variant="ghost" onClick={onClose}>Later</Btn>
+          <div style={{ flex:1 }}><Btn onClick={()=>setStep("reset")} full>Continue →</Btn></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── DAILY VIEW with habits + week timeline ───────────────────────────────────
+const MODE_HABITS = {
+  build:     ["Ship one thing today","No new ideas until you finish what's open","Open your project first thing"],
+  stabilize: ["Do the one task you've been avoiding","Check in on your income or pipeline","Keep your schedule consistent today"],
+  pivot:     ["Explore one new direction for 15 min","Talk to someone in a space you're curious about","Drop one thing that's no longer serving you"],
+  focus:     ["Touch only your focus lane today","Say no to one thing that would pull you away","Work on your focus lane before checking messages"],
+  expand:    ["Put your work in one new space today","Reach out to one person","Post or share something about your work"],
+  refine:    ["Improve one thing until it's genuinely better","Ask for feedback on your strongest piece","Cut one thing that dilutes your work"],
+  rest:      ["Protect your rest today — no guilt","Do one thing purely for enjoyment","Go outside at some point today"],
+};
+
+function DailyView({ profile, weekData, onUpdateWeek, strategy, onCapture }) {
+  const mode = MODES[profile.modeId]||MODES.build;
+  const today = new Date();
+  const dayIdx = today.getDay();
+  const tasks = (weekData?.tasks||[]).slice(0,3);
+  const done = tasks.filter(t=>t.done).length;
+
+  // Habits — stored as weekData.habits: { [dayKey]: { [idx]: bool } }
+  const dayKey = today.toISOString().slice(0,10);
+  const habitsChecked = weekData?.habits?.[dayKey] || {};
+  const habits = MODE_HABITS[profile.modeId]||MODE_HABITS.build;
+
+  const toggleHabit = (i) => {
+    const updated = { ...(weekData?.habits||{}), [dayKey]: { ...habitsChecked, [i]: !habitsChecked[i] } };
+    onUpdateWeek({ ...weekData, habits: updated });
+  };
+
+  // Week timeline
+  const weekStart = new Date(today); weekStart.setDate(today.getDate()-dayIdx); weekStart.setHours(0,0,0,0);
+
+  return (
+    <div style={{ padding:"0 0 100px", maxWidth:480, margin:"0 auto", fontFamily:"'DM Sans',sans-serif" }}>
+
+      {/* Header */}
+      <div style={{ padding:"24px 20px 0" }}>
+        <p style={{ fontSize:9, letterSpacing:4, color:T.inkSoft, textTransform:"uppercase", marginBottom:2 }}>Today</p>
+        <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:32, fontWeight:300, color:T.ink, lineHeight:1 }}>
+          {today.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})}
+        </h2>
+      </div>
+
+      {/* Week timeline strip */}
+      <div style={{ margin:"16px 20px 0", background:"#fff", border:`1px solid ${T.border}`, borderRadius:12, padding:"14px 16px", boxShadow:T.sh }}>
+        <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:10 }}>This week</p>
+        <div style={{ display:"flex", gap:4 }}>
+          {WEEK_DAYS.map((day,i) => {
+            const d = new Date(weekStart); d.setDate(weekStart.getDate()+i);
+            const isToday = i===dayIdx;
+            const isPast = i<dayIdx;
+            const dateNum = d.getDate();
+            // Count tasks done on this day (by noteTime)
+            const notedToday = (weekData?.tasks||[]).filter(t=>t.noteTime&&new Date(t.noteTime).toDateString()===d.toDateString()).length;
+            return (
+              <div key={i} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                <p style={{ fontSize:8, letterSpacing:1, color:isToday?T.inkWarm:T.muted, textTransform:"uppercase", fontWeight:isToday?600:400 }}>{day}</p>
+                <div style={{ width:28, height:28, borderRadius:"50%", background:isToday?T.ink:isPast?T.tint:"#fff", border:`1.5px solid ${isToday?T.ink:isPast?T.tintBorder:T.border}`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  <p style={{ fontSize:11, color:isToday?"#FAF7F4":isPast?T.inkWarm:T.muted, fontWeight:isToday?600:400 }}>{dateNum}</p>
+                </div>
+                {/* Dot if something was logged today */}
+                <div style={{ width:4, height:4, borderRadius:"50%", background:notedToday>0?T.inkSoft:"transparent" }}/>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Today's directive */}
+      <div style={{ margin:"10px 20px 0", background:mode.moodBg, border:`1.5px solid ${mode.moodBorder}`, borderRadius:12, padding:"16px 18px" }}>
+        <p style={{ fontSize:9, letterSpacing:3, color:`${mode.moodColor}99`, textTransform:"uppercase", marginBottom:6 }}>Today's directive · {mode.label}</p>
+        <p style={{ fontSize:15, color:mode.moodColor, fontWeight:700, lineHeight:1.5 }}>{mode.behavior}</p>
+        {strategy?.focusLane && (
+          <p style={{ fontSize:12, color:mode.moodColor, marginTop:6, opacity:0.8 }}>Focus lane: <strong>{strategy.focusLane}</strong></p>
+        )}
+      </div>
+
+      {/* Daily habits */}
+      <div style={{ margin:"10px 20px 0", background:"#fff", border:`1.5px solid ${T.border}`, borderRadius:12, overflow:"hidden", boxShadow:T.shMd }}>
+        <div style={{ padding:"12px 18px 10px", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase" }}>Daily habits</p>
+          <p style={{ fontSize:11, color:Object.values(habitsChecked).filter(Boolean).length===habits.length?T.inkSoft:T.muted }}>
+            {Object.values(habitsChecked).filter(Boolean).length}/{habits.length}
+          </p>
+        </div>
+        {habits.map((h,i) => {
+          const checked = !!habitsChecked[i];
+          return (
+            <div key={i} onClick={()=>toggleHabit(i)} style={{ display:"flex", gap:12, alignItems:"center", padding:"13px 18px", borderBottom:i<habits.length-1?`1px solid ${T.border}`:"none", cursor:"pointer", background:checked?"#FAFAF8":"#fff", transition:"background 0.15s" }}>
+              <div style={{ width:20, height:20, borderRadius:"50%", border:`2px solid ${checked?T.inkSoft:T.border}`, background:checked?T.tint:"transparent", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", transition:"all 0.15s" }}>
+                {checked && <span style={{ color:T.inkWarm, fontSize:11, fontWeight:700 }}>✓</span>}
+              </div>
+              <p style={{ fontSize:13, color:checked?T.muted:T.ink, textDecoration:checked?"line-through":"none", lineHeight:1.5, fontWeight:checked?400:400 }}>{h}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Today's tasks (first 3) */}
+      {tasks.length>0 && (
+        <div style={{ margin:"10px 20px 0", background:"#fff", border:`1px solid ${T.border}`, borderRadius:12, padding:"14px 18px", boxShadow:T.sh }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+            <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase" }}>This week's tasks</p>
+            <p style={{ fontSize:11, color:T.muted }}>{done}/{tasks.length}</p>
+          </div>
+          {tasks.map((t,i) => (
+            <div key={i} style={{ display:"flex", gap:10, alignItems:"flex-start", paddingBottom:i<tasks.length-1?10:0, marginBottom:i<tasks.length-1?10:0, borderBottom:i<tasks.length-1?`1px solid ${T.border}`:"none" }}>
+              <div style={{ width:16, height:16, borderRadius:4, border:`2px solid ${t.done?T.inkSoft:T.border}`, background:t.done?T.tint:"transparent", flexShrink:0, marginTop:2, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                {t.done && <span style={{ color:T.inkWarm, fontSize:10, fontWeight:700 }}>✓</span>}
+              </div>
+              <p style={{ fontSize:12, color:t.done?T.muted:T.sub, textDecoration:t.done?"line-through":"none", lineHeight:1.5 }}>{t.action}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Capture quick-entry */}
+      <div style={{ margin:"10px 20px 0" }}>
+        <button type="button" onClick={onCapture} style={{ width:"100%", background:"transparent", border:`1px dashed ${T.border}`, borderRadius:10, padding:"14px", fontSize:12, color:T.muted, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation", textAlign:"left" }}>
+          ✎ Something in your head? Drop it in Capture →
+        </button>
+      </div>
+    </div>
+  );
+}
+const CAREER_CATEGORIES = {
+  creative: {
+    label:"Creative", keywords:["designer","artist","photographer","illustrator","filmmaker","animator","creator","fashion","stylist","decorator","architect","interior","graphic","motion","visual","content","writer","poet","musician","painter"],
+    modes: {
+      build:     ["Produce one finished piece of work","Post your work publicly — done beats perfect","Spend 90 min on your primary creative project"],
+      focus:     ["Finish one creative project before starting another","Clear your workspace and creative queue","Define what you're making this week and make only that"],
+      stabilize: ["Create a repeatable weekly production schedule","Organize your existing work into a presentable portfolio","Set a consistent posting rhythm and protect it"],
+      expand:    ["Share your work in 3 new spaces today","Reach out to one collaborator or client","Create content about your process — not just the output"],
+      refine:    ["Edit one piece of work until it's genuinely good","Study one creative you admire — identify what makes them sharp","Remove everything from your portfolio that doesn't represent your best"],
+      pivot:     ["Sketch 5 concepts in a direction you haven't tried","Research one creative field adjacent to yours","Create something purely experimental with zero commercial intent"],
+      rest:      ["Step away from your creative tools today","Consume instead of create — watch, read, absorb","Go somewhere that has nothing to do with your work"],
+    }
+  },
+  business: {
+    label:"Business", keywords:["founder","entrepreneur","startup","business","ceo","owner","brand","agency","consultant","freelancer","coach","strategist","marketer","sales","product","operator","manager","director","executive"],
+    modes: {
+      build:     ["Build one thing that generates revenue this week","Send 5 outreach messages to potential clients","Define your offer clearly enough to say it in one sentence"],
+      focus:     ["Pick your highest-leverage activity and do only that","Cancel or delegate everything that doesn't move money","Set a revenue goal for this week and work backward from it"],
+      stabilize: ["Fix the one system that keeps breaking","Document your process so it can run without you","Follow up on every open proposal or conversation"],
+      expand:    ["Raise your prices on at least one offer","Open one new acquisition channel this week","Ask 3 current clients for a referral"],
+      refine:    ["Rewrite your core offer until it's undeniable","Audit your client experience from first contact to delivery","Cut the service or product that costs more than it earns"],
+      pivot:     ["Talk to 5 people about the new direction before building anything","Test one new offer at a small scale","Identify what from your current business transfers to the new direction"],
+      rest:      ["Stop checking revenue numbers for 24 hours","Delegate everything non-critical this week","Protect your evenings — no business communication after 7pm"],
+    }
+  },
+  tech: {
+    label:"Tech", keywords:["developer","engineer","programmer","coder","software","tech","product","data","analyst","scientist","devops","backend","frontend","fullstack","app","web","mobile","ai","ml","ux","ui"],
+    modes: {
+      build:     ["Ship something small and functional today","Commit code every day this week — no exceptions","Define the MVP and cut everything else"],
+      focus:     ["Turn off Slack and notifications for your primary work block","Finish the feature you started before beginning the next","Pick the one technical debt item that will unblock everything else"],
+      stabilize: ["Write tests for the thing that keeps breaking","Document the parts of the codebase only you understand","Set up monitoring so you stop finding out about bugs from users"],
+      expand:    ["Open source something or write about what you built","Apply to one conference, fellowship, or opportunity","Share your project with a community that isn't already following you"],
+      refine:    ["Review your code from 3 months ago and make it better","Get a technical review from someone more senior","Optimize the one thing users complain about most"],
+      pivot:     ["Build a proof of concept in the new direction — 2 days max","Talk to 10 potential users before writing a line of code","Identify which of your current skills transfer directly"],
+      rest:      ["No side projects this week — protect your recovery","Go outside. Touch grass. Seriously.","Read something completely unrelated to technology"],
+    }
+  },
+  student: {
+    label:"Student", keywords:["student","studying","university","college","school","graduate","phd","masters","degree","course","class","exam","thesis","dissertation","intern","internship","learning","education"],
+    modes: {
+      build:     ["Complete one major assignment from start to finish today","Build something for your portfolio — even if it's small","Start the project you've been procrastinating on"],
+      focus:     ["Study only the subject that matters most this week","Turn off your phone for your study blocks","Identify the 20% of material that covers 80% of what you'll be tested on"],
+      stabilize: ["Get your notes organized before the next lecture","Create a consistent daily study schedule and protect it","Review everything from the last 2 weeks — fill the gaps"],
+      expand:    ["Reach out to one professor or professional in your field","Apply for one opportunity — internship, scholarship, program","Attend one event outside your normal academic circle"],
+      refine:    ["Rewrite your weakest essay or assignment","Get feedback on your work from someone you respect","Identify the skill gap that's holding you back and address it"],
+      pivot:     ["Research 3 career paths you haven't seriously considered","Talk to someone working in a field you're curious about","Give yourself permission to change direction — then investigate what that looks like"],
+      rest:      ["Take a real break — no studying, no guilt","Sleep 8 hours for 3 nights in a row","Do one thing purely for enjoyment with zero productivity attached"],
+    }
+  },
+};
+
+function inferCategory(title, skills) {
+  const text = [(title||""), ...(skills||[])].join(" ").toLowerCase();
+  for (const [cat, data] of Object.entries(CAREER_CATEGORIES)) {
+    if (data.keywords.some(kw => text.includes(kw))) return cat;
+  }
+  return "creative"; // default
+}
+
+function getCategoryTasks(category, modeId, title) {
+  const cat = CAREER_CATEGORIES[category] || CAREER_CATEGORIES.creative;
+  const base = cat.modes[modeId] || cat.modes.build;
+  // Light personalization: replace generic noun with their actual title
+  const shortTitle = (title||"").split("/")[0].trim().split(" ").slice(-1)[0].toLowerCase();
+  return base.map(task => {
+    if (shortTitle && shortTitle.length > 3 && !["and","the","for","with"].includes(shortTitle)) {
+      return task; // keep as-is — tasks are already role-aware
+    }
+    return task;
+  }).map(t => ({ action: t, time: "30–60 min", impact: "", done: false }));
+}
+
 function Intro({ onStart }) {
   return (
     <div style={{ fontFamily:"'DM Sans',sans-serif", background:T.bg, minHeight:"100vh", display:"flex", flexDirection:"column", justifyContent:"center", alignItems:"center", padding:"48px 32px", textAlign:"center", position:"relative", overflow:"hidden" }}>
@@ -1642,7 +2284,7 @@ function Intro({ onStart }) {
         <button type="button" onClick={onStart} style={{ background:T.ink, color:"#FAF7F4", border:"none", padding:"16px 48px", fontSize:11, letterSpacing:"2px", textTransform:"uppercase", fontWeight:500, cursor:"pointer", borderRadius:4, fontFamily:"'DM Sans',sans-serif", boxShadow:"0 2px 12px rgba(15,12,10,0.22)", display:"block", width:"100%", marginBottom:14, touchAction:"manipulation", WebkitTapHighlightColor:"rgba(0,0,0,0)", minHeight:50 }}>
           Find My Mode →
         </button>
-        <p style={{ fontSize:11, color:T.muted }}>Free · no account required · data saved to this device</p>
+        <p style={{ fontSize:11, color:T.muted }}>Free · account required · syncs across all your devices</p>
       </div>
     </div>
   );
@@ -1662,6 +2304,7 @@ export default function App() {
   const [showSwitch, setShowSwitch] = useState(false);
   const [showCheckIn, setShowCheckIn] = useState(false);
   const [showFocusStyle, setShowFocusStyle] = useState(false);
+  const [showWeeklyReview, setShowWeeklyReview] = useState(false);
   const [editing, setEditing] = useState(false);
 
   useEffect(() => {
@@ -1674,8 +2317,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // Always show intro first — returning users get email pre-filled at login step
-    setAppState("intro");
+    // Try to restore Supabase session first; fall back to intro
+    (async () => {
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          const { data: { session } } = await sb.auth.getSession();
+          if (session?.user?.email) {
+            await loadUserData(session.user.email);
+            return;
+          }
+        } catch {}
+      }
+      setAppState("intro");
+    })();
   }, []);
 
   const loadUserData = async (e) => {
@@ -1775,6 +2430,19 @@ export default function App() {
     await saveProfile(updated); setEditing(false); setStratKey(k=>k+1);
   };
 
+  const weeklyReviewComplete = async ({ reviewAnswers, newModeId, newAnswers }) => {
+    // Log the week
+    const wkEntry = { weekStart:weekData?.week||weekKey(), modeId:profile.modeId, focusLane:strategy?.focusLane||"", done:(weekData?.tasks||[]).filter(t=>t.done).length, total:(weekData?.tasks||[]).length, review:reviewAnswers };
+    const newWH = [...weekHistory, wkEntry];
+    setWeekHistory(newWH); await db.set(email,"weekHistory",newWH);
+    // Apply new mode
+    const updated = { ...profile, modeId:newModeId, answers:newAnswers||profile.answers };
+    const newH = [...history, { date:new Date().toISOString(), modeId:newModeId }];
+    const newW = { week:weekKey(), tasks:[] };
+    await saveProfile(updated); await saveHistory(newH); await db.set(email,"week",newW); setWeekData(newW);
+    setShowWeeklyReview(false); setStratKey(k=>k+1);
+  };
+
   const patterns = analysePatterns(history, weekHistory, profile?.modeId||"build");
 
   if(appState==="loading") return <div style={{background:"#F5F2ED",minHeight:"100vh"}}/>;
@@ -1786,14 +2454,18 @@ export default function App() {
   return (
     <div style={{fontFamily:"'DM Sans',sans-serif",background:"#F5F2ED",minHeight:"100vh",color:"#0F0C0A"}}>
       {tab==="dashboard" && <Dashboard profile={profile} strategy={strategy} stratLoading={stratLoading} weekData={weekData} onUpdateWeek={saveWeek} onSwitch={()=>setShowSwitch(true)} onEdit={()=>setEditing(true)} onCheckIn={()=>setShowCheckIn(true)} onFocusStyleChange={()=>setShowFocusStyle(true)} patterns={patterns}/>}
-      {tab==="week"      && <ThisWeek  profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy}/>}
-      {tab==="history"   && <History   history={history} weekHistory={weekHistory} weekData={weekData}/>}
-      {tab==="pulse"     && <Pulse     profile={profile} strategy={strategy}/>}
-      {tab==="share"     && <Share     profile={profile} strategy={strategy} weekData={weekData}/>}
+      {tab==="today"     && <DailyView  profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onCapture={()=>setTab("capture")}/>}
+      {tab==="week"      && <ThisWeek   profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onReview={()=>setShowWeeklyReview(true)}/>}
+      {tab==="history"   && <History    history={history} weekHistory={weekHistory} weekData={weekData}/>}
+      {tab==="pulse"     && <Pulse      profile={profile} strategy={strategy}/>}
+      {tab==="focus"     && <WeeklyFocus profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onCapture={()=>setTab("capture")}/>}
+      {tab==="capture"   && <Capture    profile={profile} weekData={weekData} onUpdateWeek={saveWeek} onAddToPriority={()=>setTab("focus")}/>}
+      {tab==="share"     && <Share      profile={profile} strategy={strategy} weekData={weekData}/>}
       <TabBar tab={tab} setTab={setTab}/>
-      {showSwitch    && <SwitchSheet onSave={switchMode} onClose={()=>setShowSwitch(false)}/>}
-      {showCheckIn   && <CheckInSheet onStay={checkInStay} onSwitch={()=>{setShowCheckIn(false);setShowSwitch(true);}} onClose={()=>setShowCheckIn(false)}/>}
-      {showFocusStyle&& <FocusStyleSheet current={profile.focusStyle} onSave={changeFocusStyle} onClose={()=>setShowFocusStyle(false)}/>}
+      {showSwitch        && <SwitchSheet onSave={switchMode} onClose={()=>setShowSwitch(false)}/>}
+      {showCheckIn       && <CheckInSheet onStay={checkInStay} onSwitch={()=>{setShowCheckIn(false);setShowSwitch(true);}} onClose={()=>setShowCheckIn(false)}/>}
+      {showFocusStyle    && <FocusStyleSheet current={profile.focusStyle} onSave={changeFocusStyle} onClose={()=>setShowFocusStyle(false)}/>}
+      {showWeeklyReview  && <WeeklyReview profile={profile} weekData={weekData} history={history} weekHistory={weekHistory} onComplete={weeklyReviewComplete} onClose={()=>setShowWeeklyReview(false)}/>}
     </div>
   );
 }
