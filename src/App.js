@@ -293,7 +293,8 @@ const db = {
         await sb.from("user_data").upsert({ email, key: k, value: v, updated_at: new Date().toISOString() }, { onConflict: "email,key" });
         return;
       } catch {}
-    },
+      }
+  },
 
   // Migrate any existing localStorage data to Supabase for this email
   async migrate(email) {
