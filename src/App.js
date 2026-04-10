@@ -2320,6 +2320,11 @@ export default function App() {
 
   const loadUserData = async (e) => {
     try {
+      // Check if Supabase has profile — if not, migrate from localStorage first
+      const sbProfile = await sbGet(e, "profile");
+      if (!sbProfile) {
+        await db.migrate(e);
+      }
       const p=await db.get(e,"profile"), h=await db.get(e,"history"), w=await db.get(e,"week"), wh=await db.get(e,"weekHistory");
       setEmail(e);
       if(p){ setProfile(p); setHistory(h||[]); setWeekData(w||null); setWeekHistory(wh||[]); setAppState("app"); }
