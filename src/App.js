@@ -252,63 +252,65 @@ function calcModeScores(answers) {
   return scores;
 }
 
-// ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
-// Initialised lazily so the app still renders if env vars aren't set yet
-function getSupabase() {
-  // CRA uses process.env.REACT_APP_* — Vite would use import.meta.env.VITE_*
-  const url = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_URL)
-    || window.__SUPABASE_URL__ || "";
-  const key = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_KEY)
-    || window.__SUPABASE_KEY__ || "";
-  if (!url || !key) return null;
+// ─── SUPABASE REST API (no SDK needed) ───────────────────────────────────────
+const SB_URL = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_URL) || "";
+const SB_KEY = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_KEY) || "";
+
+async function sbGet(email, k) {
+  if (!SB_URL || !SB_KEY) return null;
   try {
-    if (window._sbClient) return window._sbClient;
-    if (window.supabase?.createClient) {
-      window._sbClient = window.supabase.createClient(url, key);
-      return window._sbClient;
-    }
-    return null;
+    const res = await fetch(
+      `${SB_URL}/rest/v1/user_data?email=eq.${encodeURIComponent(email)}&key=eq.${encodeURIComponent(k)}&select=value&limit=1`,
+      { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}`, "Content-Type": "application/json" } }
+    );
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows?.[0]?.value ?? null;
   } catch { return null; }
 }
 
-// db — localStorage first (always reliable), Supabase as cloud sync bonus
+async function sbSet(email, k, v) {
+  if (!SB_URL || !SB_KEY) return;
+  try {
+    await fetch(`${SB_URL}/rest/v1/user_data`, {
+      method: "POST",
+      headers: {
+        "apikey": SB_KEY,
+        "Authorization": `Bearer ${SB_KEY}`,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates",
+      },
+      body: JSON.stringify({ email, key: k, value: v, updated_at: new Date().toISOString() }),
+    });
+  } catch {}
+}
+
+// db — localStorage first (always reliable), Supabase REST for cross-device sync
 const db = {
   _lsKey: (email, k) => `mos_${email.toLowerCase().replace(/[^a-z0-9]/g,"_")}_${k}`,
 
   async get(email, k) {
-    // Try Supabase first if available
-    const sb = getSupabase();
-    if (sb) {
-      try {
-        const { data } = await sb.from("user_data").select("value").eq("email", email).eq("key", k).maybeSingle();
-        if (data?.value !== undefined && data?.value !== null) return data.value;
-      } catch {}
-    }
-    // Always fall back to localStorage
+    // Try Supabase first for cross-device
+    const sbVal = await sbGet(email, k);
+    if (sbVal !== null && sbVal !== undefined) return sbVal;
+    // Fall back to localStorage
     try { const v = localStorage.getItem(db._lsKey(email,k)); return v ? JSON.parse(v) : null; } catch { return null; }
   },
 
   async set(email, k, v) {
-    // Always save to localStorage (guaranteed to work)
+    // Save to localStorage always
     try { localStorage.setItem(db._lsKey(email,k), JSON.stringify(v)); } catch {}
-    // Also sync to Supabase if available
-    const sb = getSupabase();
-    if (sb) {
-      try {
-        await sb.from("user_data").upsert({ email, key: k, value: v, updated_at: new Date().toISOString() }, { onConflict: "email,key" });
-      } catch {}
-    }
+    // Save to Supabase for cross-device
+    await sbSet(email, k, v);
   },
 
-  // Migrate any existing localStorage data to Supabase for this email
   async migrate(email) {
-    const sb = getSupabase(); if (!sb) return;
     for (const k of ["profile","history","week","weekHistory"]) {
       try {
         const local = localStorage.getItem(db._lsKey(email,k));
         if (!local) continue;
         const val = JSON.parse(local);
-        await sb.from("user_data").upsert({ email, key: k, value: val, updated_at: new Date().toISOString() }, { onConflict: "email,key" });
+        await sbSet(email, k, val);
       } catch {}
     }
   },
@@ -619,46 +621,38 @@ function SoftLogin({ onLogin }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
-  const sb = getSupabase();
 
   const handleEmailNext = () => {
     if (!email.trim().toLowerCase().includes("@")) return;
-    setStep("password"); // always show password step
+    setStep("password");
   };
 
   const handleAuth = async () => {
     const e = email.trim().toLowerCase();
     if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
     setLoading(true); setError("");
-    const sb = getSupabase();
-    if (!sb) {
-      // No Supabase — accept any password as a local passphrase, store it hashed in localStorage
-      const stored = localStorage.getItem("mos_pw_" + e);
+
+    try {
+      // Check if password exists in Supabase for this email
+      const stored = await sbGet(e, "__password__");
       if (!stored) {
-        localStorage.setItem("mos_pw_" + e, password);
+        // New user — save password and migrate any local data
+        await sbSet(e, "__password__", password);
         await db.migrate(e);
+        setIsNew(true);
       } else if (stored !== password) {
         setError("Wrong password. Try again."); setLoading(false); return;
       }
-      try { localStorage.setItem("mos_last_email", JSON.stringify(e)); } catch {}
-      setDone(true); setLoading(false); onLogin(e); return;
-    }
-    if (isNew) {
-      const { error: err } = await sb.auth.signUp({ email: e, password });
-      if (err) {
-        if (err.message?.toLowerCase().includes("already")) { setIsNew(false); setError("Account exists. Enter your password to sign in."); }
-        else setError(err.message);
-        setLoading(false); return;
-      }
-      await db.migrate(e);
-    } else {
-      const { error: err } = await sb.auth.signInWithPassword({ email: e, password });
-      if (err) {
-        if (err.message?.toLowerCase().includes("invalid") || err.message?.toLowerCase().includes("credentials")) setError("Wrong password. Try again.");
-        else { setIsNew(true); setError("No account found. Create one below."); }
-        setLoading(false); return;
+    } catch {
+      // Supabase unavailable — fall back to localStorage password
+      const lsPw = localStorage.getItem("mos_pw_" + e);
+      if (!lsPw) {
+        localStorage.setItem("mos_pw_" + e, password);
+      } else if (lsPw !== password) {
+        setError("Wrong password. Try again."); setLoading(false); return;
       }
     }
+
     try { localStorage.setItem("mos_last_email", JSON.stringify(e)); } catch {}
     setDone(true); setLoading(false);
     onLogin(e);
@@ -2320,17 +2314,6 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      // 1. Try Supabase session
-      const sb = getSupabase();
-      if (sb) {
-        try {
-          const { data: { session } } = await sb.auth.getSession();
-          if (session?.user?.email) {
-            await loadUserData(session.user.email);
-            return;
-          }
-        } catch {}
-      }
       setAppState("intro");
     })();
   }, []);
