@@ -1279,7 +1279,7 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
   );
 }
 
-function ThisWeek({ profile, weekData, onUpdateWeek, strategy, onReview }) {
+function ThisWeek({ profile, weekData, onUpdateWeek, strategy, stratLoading, onReview }) {
   const mode = MODES[profile.modeId]||MODES.build;
   const isLight = profile.focusStyle==="light";
   const tasks = weekData?.tasks||[];
@@ -1544,7 +1544,7 @@ function Share({ profile, strategy, weekData }) {
 }
 
 // ─── PULSE — Community Mode Feed ─────────────────────────────────────────────
-function Pulse({ profile, strategy }) {
+function Pulse({ profile, strategy, email }) {
   const mode = MODES[profile.modeId]||MODES.build;
   const [step, setStep] = useState("idle");
   const [customText, setCustomText] = useState("");
@@ -2353,7 +2353,13 @@ export default function App() {
 
   useEffect(() => {
     // Always show login — but pre-load email for convenience
-    setAppState("intro");
+    (async () => {
+      try {
+        const savedEmail = localStorage.getItem("mos_session_email");
+        if (savedEmail) { await loadUserData(savedEmail); return; }
+      } catch {}
+      setAppState("intro");
+    })();
   }, []);
 
   const loadUserData = async (e) => {
@@ -2379,7 +2385,10 @@ export default function App() {
   };
 
   const handleLogin = async (e) => {
-    try { await loadUserData(e); } catch { setEmail(e); setAppState("onboarding"); }
+    try {
+      localStorage.setItem("mos_session_email", e);
+      await loadUserData(e);
+    } catch { setEmail(e); setAppState("onboarding"); }
   };
 
   useEffect(() => {
@@ -2486,9 +2495,9 @@ export default function App() {
       )}
       {tab==="dashboard" && <Dashboard profile={profile} strategy={strategy} stratLoading={stratLoading} weekData={weekData} onUpdateWeek={saveWeek} onSwitch={()=>setShowSwitch(true)} onEdit={()=>setEditing(true)} onCheckIn={()=>setShowCheckIn(true)} onFocusStyleChange={()=>setShowFocusStyle(true)} patterns={patterns}/>}
       {tab==="today"     && <DailyView  profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onCapture={()=>setTab("capture")}/>}
-      {tab==="week"      && <ThisWeek   profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onReview={()=>setShowWeeklyReview(true)}/>}
+      {tab==="week"      && <ThisWeek   profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} stratLoading={stratLoading} onReview={()=>setShowWeeklyReview(true)}/>}
       {tab==="history"   && <History    history={history} weekHistory={weekHistory} weekData={weekData}/>}
-      {tab==="pulse"     && <Pulse      profile={profile} strategy={strategy}/>}
+      {tab==="pulse"     && <Pulse      profile={profile} strategy={strategy} email={email}/>}
       {tab==="focus"     && <WeeklyFocus profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onCapture={()=>setTab("capture")}/>}
       {tab==="capture"   && <Capture    profile={profile} weekData={weekData} onUpdateWeek={saveWeek} onAddToPriority={()=>setTab("focus")}/>}
       {tab==="share"     && <Share      profile={profile} strategy={strategy} weekData={weekData}/>}
