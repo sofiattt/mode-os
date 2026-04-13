@@ -1,32 +1,41 @@
 const fs = require('fs');
-let c = fs.readFileSync('src/App.js', 'utf8');
-const before = c;
 
-// The only reason data never saves: onboard still calls db.set(activeEmail,...)
-// db object was removed, so these silently fail. Simple global replace.
-c = c.replaceAll('db.set(activeEmail,', 'sbSet(activeEmail,');
-c = c.replaceAll('db.get(activeEmail,', 'sbGet(activeEmail,');
+// Fetch the clean working version from the last good commit
+const { execSync } = require('child_process');
 
-// Fix old localStorage key on onboard
-c = c.replace(
-  'try { localStorage.setItem("mos_last_email", JSON.stringify(activeEmail)); } catch {}',
-  'localStorage.setItem("mos_session_email", activeEmail);'
-);
+// Get the commit hash of the last working build (9a2649a = Update patch.js, before the broken ones)
+// We need to find the commit just before the syntax errors started
+const log = execSync('git log --oneline -10').toString();
+console.log('Recent commits:\n' + log);
 
-// Session: stay logged in on refresh
-if (!c.includes('mos_session_email')) {
-  c = c.replace(
-    'setAppState("intro");\n  }, []);',
-    '(async()=>{try{const sv=localStorage.getItem("mos_session_email");if(sv){await loadUserData(sv);return;}}catch{}setAppState("intro");})();\n  }, []);'
-  );
+// Find the last commit that said "fix: session, pulse, task flash"
+const lines = log.split('\n');
+let targetHash = null;
+for (const line of lines) {
+  if (line.includes('fix: session, pulse, task flash')) {
+    targetHash = line.split(' ')[0];
+    break;
+  }
 }
 
-// Save email on login
-c = c.replace(
-  'try { await loadUserData(e); } catch { setEmail(e); setAppState("onboarding"); }',
-  'try{localStorage.setItem("mos_session_email",e);await loadUserData(e);}catch{setEmail(e);setAppState("onboarding");}'
-);
-
-const changed = c !== before;
-fs.writeFileSync('src/App.js', c);
-console.log(changed ? 'Patches applied' : 'No changes needed');
+if (targetHash) {
+  console.log('Restoring App.js from commit: ' + targetHash);
+  const content = execSync('git show ' + targetHash + ':src/App.js').toString();
+  
+  // Apply ONLY the safe single-line fixes
+  let c = content;
+  
+  // Fix onboard db.set → sbSet
+  c = c.replaceAll('db.set(activeEmail,', 'sbSet(activeEmail,');
+  c = c.replaceAll('db.get(activeEmail,', 'sbGet(activeEmail,');
+  c = c.replace(
+    'try { localStorage.setItem("mos_last_email", JSON.stringify(activeEmail)); } catch {}',
+    'localStorage.setItem("mos_session_email", activeEmail);'
+  );
+  
+  fs.writeFileSync('src/App.js', c);
+  console.log('Done — restored and patched');
+} else {
+  console.log('Could not find target commit, logging all commits:');
+  console.log(execSync('git log --oneline -20').toString());
+}
