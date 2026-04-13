@@ -255,6 +255,8 @@ function calcModeScores(answers) {
 // ─── SUPABASE REST API (no SDK needed) ───────────────────────────────────────
 const SB_URL = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_URL) || "";
 const SB_KEY = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_KEY) || "";
+console.log("SB_URL loaded:", SB_URL ? SB_URL.slice(0,30) : "EMPTY");
+console.log("SB_KEY loaded:", SB_KEY ? SB_KEY.slice(0,10) : "EMPTY");
 
 async function sbGet(email, k) {
   if (!SB_URL || !SB_KEY) return null;
