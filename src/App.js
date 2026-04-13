@@ -1184,7 +1184,7 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
         <div style={{ padding:"14px 18px 12px", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <div style={{ flex:1 }}>
             <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase", marginBottom:6 }}>This Week</p>
-            {tasks.length>0 && (
+            {tasks.length>0 && !stratLoading && (
               <>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
                   <p style={{ fontSize:14, color:done===tasks.length?"#2A7A4A":T.ink, fontWeight:600 }}>
@@ -1199,7 +1199,13 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
             )}
           </div>
         </div>
-        <TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>
+        {stratLoading && tasks.length === 0 ? (
+          <div style={{ padding:"20px 18px", textAlign:"center" }}>
+            <p style={{ fontSize:13, color:T.muted, fontStyle:"italic" }}>Generating your strategy...</p>
+          </div>
+        ) : (
+          <TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>
+        )}
         {isLight && tasks.length>0 && (
           <div style={{ padding:"10px 16px", borderTop:`1px solid ${T.border}` }}>
             <button onClick={()=>onUpdateWeek({...weekData,tasks:tasks.map(t=>({...t,done:false}))})} style={{ fontSize:10, color:T.muted, background:"transparent", border:"none", cursor:"pointer", fontFamily:"'DM Sans',sans-serif", letterSpacing:"1px", textTransform:"uppercase" }}>↺ Start Fresh Today</button>
