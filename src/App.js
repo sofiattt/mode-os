@@ -2451,6 +2451,14 @@ export default function App() {
 
   return (
     <div style={{fontFamily:"'DM Sans',sans-serif",background:"#F5F2ED",minHeight:"100vh",color:"#0F0C0A"}}>
+
+{/* TEMP DEBUG - remove after */}
+<div style={{background:"red",color:"white",padding:"8px",fontSize:"11px",wordBreak:"break-all"}}>
+  URL: {process.env.REACT_APP_SUPABASE_URL ? process.env.REACT_APP_SUPABASE_URL.slice(0,30) : "MISSING"}
+  {" | "}
+  KEY: {process.env.REACT_APP_SUPABASE_KEY ? "OK" : "MISSING"}
+</div>
+
       {tab==="dashboard" && <Dashboard profile={profile} strategy={strategy} stratLoading={stratLoading} weekData={weekData} onUpdateWeek={saveWeek} onSwitch={()=>setShowSwitch(true)} onEdit={()=>setEditing(true)} onCheckIn={()=>setShowCheckIn(true)} onFocusStyleChange={()=>setShowFocusStyle(true)} patterns={patterns}/>}
       {tab==="today"     && <DailyView  profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onCapture={()=>setTab("capture")}/>}
       {tab==="week"      && <ThisWeek   profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onReview={()=>setShowWeeklyReview(true)}/>}
