@@ -1,17 +1,30 @@
 name: Apply Patches
 on:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Apply patches
-        run: node .github/workflows/patch.js
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      - name: Restore and fix
+        run: |
+          git log --oneline -15
+          GOOD=$(git log --oneline | grep "fix: session, pulse, task flash" | head -1 | cut -d' ' -f1)
+          echo "Restoring from $GOOD"
+          git checkout $GOOD -- src/App.js
+          sed -i 's/db\.set(activeEmail,/sbSet(activeEmail,/g' src/App.js
+          sed -i 's/db\.get(activeEmail,/sbGet(activeEmail,/g' src/App.js
+          sed -i 's/localStorage\.setItem("mos_last_email", JSON\.stringify(activeEmail))/localStorage.setItem("mos_session_email", activeEmail)/g' src/App.js
+          echo "Done"
       - name: Commit
         run: |
           git config user.email "patch@modeos.io"
           git config user.name "Mode OS Patch"
           git add src/App.js
-          git diff --cached --quiet || git commit -m "fix: session, pulse, task flash"
+          git diff --cached --quiet || git commit -m "restore: clean App.js with db.set fix"
           git push
