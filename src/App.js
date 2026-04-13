@@ -252,18 +252,16 @@ function calcModeScores(answers) {
   return scores;
 }
 
-// ─── SUPABASE REST API (no SDK needed) ───────────────────────────────────────
+// ─── SUPABASE REST API ────────────────────────────────────────────────────────
 const SB_URL = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_URL) || "";
 const SB_KEY = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_KEY) || "";
-console.log("SB_URL loaded:", SB_URL ? SB_URL.slice(0,30) : "EMPTY");
-console.log("SB_KEY loaded:", SB_KEY ? SB_KEY.slice(0,10) : "EMPTY");
 
 async function sbGet(email, k) {
   if (!SB_URL || !SB_KEY) return null;
   try {
     const res = await fetch(
       `${SB_URL}/rest/v1/user_data?email=eq.${encodeURIComponent(email)}&key=eq.${encodeURIComponent(k)}&select=value&limit=1`,
-      { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}`, "Content-Type": "application/json" } }
+      { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` } }
     );
     if (!res.ok) return null;
     const rows = await res.json();
@@ -286,48 +284,28 @@ async function sbSet(email, k, v) {
     });
     if (!res.ok) {
       const err = await res.text();
-      console.error("sbSet failed:", res.status, err);
-      // Show visible error in app
       window.__sbErr = `Write failed: ${res.status} — ${err.slice(0,80)}`;
       window.dispatchEvent(new Event("sberror"));
     }
   } catch (e) {
-    console.error("sbSet exception", e);
     window.__sbErr = `Write exception: ${e.message}`;
     window.dispatchEvent(new Event("sberror"));
   }
 }
 
-// db — localStorage first (always reliable), Supabase REST for cross-device sync
-const db = {
-  _lsKey: (email, k) => `mos_${email.toLowerCase().replace(/[^a-z0-9]/g,"_")}_${k}`,
-
-  async get(email, k) {
-    // Try Supabase first for cross-device
-    const sbVal = await sbGet(email, k);
-    if (sbVal !== null && sbVal !== undefined) return sbVal;
-    // Fall back to localStorage
-    try { const v = localStorage.getItem(db._lsKey(email,k)); return v ? JSON.parse(v) : null; } catch { return null; }
-  },
-
-  async set(email, k, v) {
-    // Save to localStorage always
-    try { localStorage.setItem(db._lsKey(email,k), JSON.stringify(v)); } catch {}
-    // Save to Supabase for cross-device
-    await sbSet(email, k, v);
-  },
-
-  async migrate(email) {
-    for (const k of ["profile","history","week","weekHistory"]) {
-      try {
-        const local = localStorage.getItem(db._lsKey(email,k));
-        if (!local) continue;
-        const val = JSON.parse(local);
-        await sbSet(email, k, val);
-      } catch {}
-    }
-  },
-};
+// Fetch all pulse posts for a given week (across all users)
+async function sbGetFeed(wk) {
+  if (!SB_URL || !SB_KEY) return [];
+  try {
+    const res = await fetch(
+      `${SB_URL}/rest/v1/user_data?key=eq.${encodeURIComponent("pulse_"+wk)}&select=value&order=updated_at.desc`,
+      { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` } }
+    );
+    if (!res.ok) return [];
+    const rows = await res.json();
+    return rows.map(r => r.value).filter(Boolean);
+  } catch { return []; }
+}
 
 
 
@@ -626,9 +604,8 @@ function TimerCard({ seconds, label, onDone, onClose }) {
 }
 
 function SoftLogin({ onLogin }) {
-  const savedEmail = (() => { try { const s=localStorage.getItem("mos_last_email"); return s?JSON.parse(s):""; } catch { return ""; } })();
   const [step, setStep] = useState("email");
-  const [email, setEmail] = useState(savedEmail);
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isNew, setIsNew] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -644,29 +621,17 @@ function SoftLogin({ onLogin }) {
     const e = email.trim().toLowerCase();
     if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
     setLoading(true); setError("");
-
     try {
-      // Check if password exists in Supabase for this email
       const stored = await sbGet(e, "__password__");
       if (!stored) {
-        // New user — save password and migrate any local data
         await sbSet(e, "__password__", password);
-        await db.migrate(e);
         setIsNew(true);
       } else if (stored !== password) {
         setError("Wrong password. Try again."); setLoading(false); return;
       }
     } catch {
-      // Supabase unavailable — fall back to localStorage password
-      const lsPw = localStorage.getItem("mos_pw_" + e);
-      if (!lsPw) {
-        localStorage.setItem("mos_pw_" + e, password);
-      } else if (lsPw !== password) {
-        setError("Wrong password. Try again."); setLoading(false); return;
-      }
+      setError("Connection error. Check your internet and try again."); setLoading(false); return;
     }
-
-    try { localStorage.setItem("mos_last_email", JSON.stringify(e)); } catch {}
     setDone(true); setLoading(false);
     onLogin(e);
   };
@@ -699,8 +664,8 @@ function SoftLogin({ onLogin }) {
 
         {step === "email" ? (
           <>
-            <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>{savedEmail ? "Welcome back." : "Your email."}</h2>
-            <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>{savedEmail ? "Sign in to pick up where you left off — your profile, tasks, and history." : "Create a free account to save your profile and access it from any device."}</p>
+            <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>Your email.</h2>
+            <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Sign in or create a free account. Your data syncs across all devices.</p>
             <input value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleEmailNext()} placeholder="your@email.com" type="email" autoCapitalize="none" autoComplete="email" style={{ ...INP, marginBottom:12, fontSize:16 }}/>
             <button type="button" onClick={handleEmailNext} disabled={!email.includes("@")} style={btnStyle(!email.includes("@"))}>Continue &#8594;</button>
             <p style={{ fontSize:11, color:T.muted, textAlign:"center", marginTop:6 }}>Your data syncs across all your devices.</p>
@@ -710,14 +675,9 @@ function SoftLogin({ onLogin }) {
             <button type="button" onClick={()=>{setStep("email");setError("");}} style={{ background:"transparent", border:"none", fontSize:12, color:T.muted, cursor:"pointer", marginBottom:20, fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>&#8592; {email}</button>
             <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>{isNew ? "Create a password." : "Enter your password."}</h2>
             <p style={{ fontSize:14, color:T.sub, marginBottom:20, lineHeight:1.8 }}>{isNew ? "Secures your profile so you can access it anywhere." : "Your profile, tasks, and history will load across all devices."}</p>
-            {!isNew && savedEmail === email.trim().toLowerCase() && (
-              <div style={{ background:T.tint, border:`1px solid ${T.tintBorder}`, borderRadius:8, padding:"11px 14px", marginBottom:16 }}>
-                <p style={{ fontSize:12, color:T.inkWarm, lineHeight:1.6 }}>Your existing data on this device will sync to your account automatically.</p>
-              </div>
-            )}
             <input value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleAuth()} placeholder={isNew?"Create a password (min 6 chars)":"Your password"} type="password" autoComplete={isNew?"new-password":"current-password"} style={{ ...INP, marginBottom:error?8:12, fontSize:16 }}/>
             {error && <p style={{ fontSize:12, color:"#C04040", marginBottom:12, lineHeight:1.5 }}>{error}</p>}
-            <button type="button" onClick={handleAuth} disabled={loading||password.length<6} style={btnStyle(loading||password.length<6)}>{loading?(isNew?"Creating account...":"Signing in..."):(isNew?"Create Account &#8594;":"Sign In &#8594;")}</button>
+            <button type="button" onClick={handleAuth} disabled={loading||password.length<6} style={btnStyle(loading||password.length<6)}>{loading?(isNew?"Creating account...":"Signing in..."):(isNew?"Create Account →":"Sign In →")}</button>
             <button type="button" onClick={()=>{setIsNew(!isNew);setError("");}} style={{ width:"100%", background:"transparent", border:`1px solid ${T.border}`, borderRadius:4, padding:"13px 24px", fontSize:11, letterSpacing:"1.2px", textTransform:"uppercase", color:T.sub, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", minHeight:50, touchAction:"manipulation" }}>{isNew?"Already have an account? Sign in":"New here? Create an account"}</button>
           </>
         )}
@@ -1586,52 +1546,49 @@ function Share({ profile, strategy, weekData }) {
 // ─── PULSE — Community Mode Feed ─────────────────────────────────────────────
 function Pulse({ profile, strategy }) {
   const mode = MODES[profile.modeId]||MODES.build;
-  const [step, setStep] = useState("idle"); // idle | compose | posted
+  const [step, setStep] = useState("idle");
   const [customText, setCustomText] = useState("");
   const [feed, setFeed] = useState([]);
   const [modeCounts, setModeCounts] = useState({});
+  const [feedLoading, setFeedLoading] = useState(true);
   const aiSuggestion = strategy?.shareCallout || mode.callouts[0];
   const focusLane = strategy?.focusLane || localFocusLane(profile, profile.modeId)?.label || "";
+  const wk = weekKey();
 
-  const loadFeed = () => {
-    const stored = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k?.startsWith("mos_pulse_")) {
-        try { stored.push(JSON.parse(localStorage.getItem(k))); } catch {}
-      }
-    }
-    // Sort newest first
-    stored.sort((a,b) => (b.ts||0) - (a.ts||0));
-    setFeed(stored);
+  const loadFeed = async () => {
+    setFeedLoading(true);
+    const posts = await sbGetFeed(wk);
+    posts.sort((a,b) => (b.ts||0) - (a.ts||0));
+    setFeed(posts);
     const counts = {};
-    stored.forEach(e => { counts[e.mode] = (counts[e.mode]||0) + 1; });
+    posts.forEach(e => { counts[e.mode] = (counts[e.mode]||0) + 1; });
     setModeCounts(counts);
+    setFeedLoading(false);
   };
 
   useEffect(() => { loadFeed(); }, []);
 
-  const hasPostedThisWeek = feed.some(e => e.name === profile.name && e.week === weekKey());
+  const hasPostedThisWeek = feed.some(e => e.email === profile.email && e.week === wk);
 
-  const submitPost = (text) => {
+  const submitPost = async (text) => {
     if (!text.trim()) return;
+    const now = new Date();
     const entry = {
+      email: profile.email,
       name: profile.name,
       mode: profile.modeId,
       lane: focusLane,
       callout: text.trim(),
-      time: "just now",
       ts: Date.now(),
-      week: weekKey(),
+      week: wk,
+      postedAt: now.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" }),
     };
-    try {
-      localStorage.setItem(`mos_pulse_${profile.name}_${Date.now()}`, JSON.stringify(entry));
-    } catch {}
+    await sbSet(profile.email, `pulse_${wk}`, entry);
     setStep("posted");
     loadFeed();
   };
 
-  const myPost = feed.find(e => e.name === profile.name && e.week === weekKey());
+  const myPost = feed.find(e => e.email === profile.email && e.week === wk);
   const sortedModes = Object.entries(modeCounts).sort((a,b)=>b[1]-a[1]);
 
   return (
@@ -1719,13 +1676,17 @@ function Pulse({ profile, strategy }) {
       )}
 
       {/* Feed */}
-      {feed.length > 0 ? (
+      {feedLoading ? (
+        <div style={{ textAlign:"center", padding:"32px 20px" }}>
+          <p style={{ fontSize:13, color:T.muted }}>Loading this week's pulse...</p>
+        </div>
+      ) : feed.length > 0 ? (
         <>
           <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:12 }}>Declarations this week</p>
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
             {feed.map((entry, i) => {
               const m = MODES[entry.mode]||MODES.build;
-              const isYou = entry.name === profile.name;
+              const isYou = entry.email === profile.email;
               return (
                 <div key={i} style={{ background: isYou ? T.tint : "#fff", border:`1.5px solid ${isYou ? T.tintBorder : T.border}`, borderRadius:10, padding:"14px 16px", boxShadow:T.sh }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
@@ -1736,7 +1697,7 @@ function Pulse({ profile, strategy }) {
                         <p style={{ fontSize:10, color:m.moodColor }}>{m.label}{entry.lane ? ` · ${entry.lane}` : ""}</p>
                       </div>
                     </div>
-                    <p style={{ fontSize:10, color:T.muted, flexShrink:0 }}>{entry.time}</p>
+                    <p style={{ fontSize:10, color:T.muted, flexShrink:0 }}>{entry.postedAt||"this week"}</p>
                   </div>
                   <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:16, fontWeight:300, color:T.ink, lineHeight:1.6, fontStyle:"italic" }}>"{entry.callout}"</p>
                 </div>
@@ -2379,11 +2340,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const link=document.createElement("link"); link.rel="stylesheet";
+    // Fonts
+    const preconnect1 = document.createElement("link"); preconnect1.rel="preconnect"; preconnect1.href="https://fonts.googleapis.com"; document.head.appendChild(preconnect1);
+    const preconnect2 = document.createElement("link"); preconnect2.rel="preconnect"; preconnect2.href="https://fonts.gstatic.com"; preconnect2.crossOrigin="anonymous"; document.head.appendChild(preconnect2);
+    const link = document.createElement("link"); link.rel="stylesheet";
     link.href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap";
     document.head.appendChild(link);
-    const s=document.createElement("style");
-    s.textContent=`*{box-sizing:border-box;margin:0;padding:0;}body{background:#F5F2ED;}input:focus{outline:none;}`;
+    const s = document.createElement("style");
+    s.textContent=`*{box-sizing:border-box;margin:0;padding:0;}body{background:#F5F2ED;}input:focus{outline:none;}textarea:focus{outline:none;}`;
     document.head.appendChild(s);
   }, []);
 
@@ -2394,24 +2358,13 @@ export default function App() {
 
   const loadUserData = async (e) => {
     try {
-      // 1. Try Supabase first
-      let p = await sbGet(e, "profile");
-      if (!p) {
-        // 2. Fall back to localStorage
-        try {
-          const lsKey = "mos_"+e.toLowerCase().replace(/[^a-z0-9]/g,"_")+"_profile";
-          const raw = localStorage.getItem(lsKey);
-          if (raw) p = JSON.parse(raw);
-        } catch {}
-        // 3. If found locally, migrate to Supabase now (writes should work post-GRANT)
-        if (p) await db.migrate(e);
-      }
-      const h = await db.get(e,"history");
-      const w = await db.get(e,"week");
-      const wh = await db.get(e,"weekHistory");
+      const p = await sbGet(e, "profile");
+      const h = await sbGet(e, "history");
+      const w = await sbGet(e, "week");
+      const wh = await sbGet(e, "weekHistory");
       setEmail(e);
       if (p) {
-        setProfile(p);
+        setProfile({...p, email: e});
         setHistory(h||[]);
         setWeekData(w||null);
         setWeekHistory(wh||[]);
@@ -2426,7 +2379,6 @@ export default function App() {
   };
 
   const handleLogin = async (e) => {
-    try { localStorage.setItem("mos_last_email", JSON.stringify(e)); } catch {}
     try { await loadUserData(e); } catch { setEmail(e); setAppState("onboarding"); }
   };
 
@@ -2434,8 +2386,8 @@ export default function App() {
     if(!weekData||!profile||!email) return;
     if(weekData.week!==weekKey()){
       const oldEntry={ weekStart:weekData.week, modeId:profile.modeId, focusLane:strategy?.focusLane||"", done:(weekData.tasks||[]).filter(t=>t.done).length, total:(weekData.tasks||[]).length };
-      const newWH=[...weekHistory,oldEntry]; setWeekHistory(newWH); db.set(email,"weekHistory",newWH);
-      const reset={ week:weekKey(), tasks:[] }; setWeekData(reset); db.set(email,"week",reset); setStratKey(k=>k+1);
+      const newWH=[...weekHistory,oldEntry]; setWeekHistory(newWH); sbSet(email,"weekHistory",newWH);
+      const reset={ week:weekKey(), tasks:[] }; setWeekData(reset); sbSet(email,"week",reset); setStratKey(k=>k+1);
     }
   }, [weekData]);
 
@@ -2445,12 +2397,11 @@ export default function App() {
     fetchStrategy(profile, profile.modeId||"build", analysePatterns(history, weekHistory, profile.modeId||"build")).then(r=>{setStrategy(r);setStratLoading(false);}).catch(()=>setStratLoading(false));
   }, [stratKey]);
 
-  const saveProfile=async p=>{await db.set(email,"profile",p);setProfile(p);};
-  const saveHistory=async h=>{await db.set(email,"history",h);setHistory(h);};
+  const saveProfile=async p=>{await sbSet(email,"profile",p);setProfile({...p,email});};
+  const saveHistory=async h=>{await sbSet(email,"history",h);setHistory(h);};
   const saveWeek=async w=>{
-    // Support functional updates
     const resolved = typeof w === "function" ? w(weekData) : w;
-    await db.set(email,"week",resolved); setWeekData(resolved);
+    await sbSet(email,"week",resolved); setWeekData(resolved);
   };
 
   const onboard = async data => {
@@ -2462,19 +2413,14 @@ export default function App() {
       lanes: data.lanes||[], customLanes: data.customLanes||[],
       activeLanes: data.lanes||[], modeId: safeMode,
       answers: data.answers||{}, focusStyle: data.focusStyle||"deep",
+      email,
     };
     const h = [{ date: new Date().toISOString(), modeId: safeMode }];
     const w = { week: weekKey(), tasks: [] };
-    let activeEmail = email;
-    if (!activeEmail) {
-      try { const s = localStorage.getItem("mos_last_email"); activeEmail = s ? JSON.parse(s) : null; } catch {}
-    }
-    if (activeEmail) {
-      try { localStorage.setItem("mos_last_email", JSON.stringify(activeEmail)); } catch {}
-      setEmail(activeEmail);
-      await db.set(activeEmail, "profile", p);
-      await db.set(activeEmail, "history", h);
-      await db.set(activeEmail, "week", w);
+    if (email) {
+      await sbSet(email, "profile", p);
+      await sbSet(email, "history", h);
+      await sbSet(email, "week", w);
     }
     setProfile(p);
     setHistory(h);
@@ -2487,7 +2433,7 @@ export default function App() {
     const updated={...profile,modeId,answers};
     const newH=[...history,{date:new Date().toISOString(),modeId}];
     const newW={week:weekKey(),tasks:[]};
-    await saveProfile(updated); await saveHistory(newH); await db.set(email,"week",newW); setWeekData(newW);
+    await saveProfile(updated); await saveHistory(newH); await sbSet(email,"week",newW); setWeekData(newW);
     setShowSwitch(false); setStratKey(k=>k+1);
   };
 
@@ -2495,13 +2441,13 @@ export default function App() {
     const updated={...profile,focusStyle:style};
     await saveProfile(updated);
     // Reset tasks so fallback + AI can re-seed for new style
-    const newW={week:weekKey(),tasks:[]}; await db.set(email,"week",newW); setWeekData(newW);
+    const newW={week:weekKey(),tasks:[]}; await sbSet(email,"week",newW); setWeekData(newW);
     setShowFocusStyle(false); setStratKey(k=>k+1);
   };
 
   const checkInStay=async()=>{
     const wkEntry={ weekStart:weekData?.week||weekKey(), modeId:profile.modeId, focusLane:strategy?.focusLane||"", done:(weekData?.tasks||[]).filter(t=>t.done).length, total:(weekData?.tasks||[]).length };
-    const newWH=[...weekHistory,wkEntry]; setWeekHistory(newWH); await db.set(email,"weekHistory",newWH);
+    const newWH=[...weekHistory,wkEntry]; setWeekHistory(newWH); await sbSet(email,"weekHistory",newWH);
     setShowCheckIn(false); setStratKey(k=>k+1);
   };
 
@@ -2514,12 +2460,12 @@ export default function App() {
     // Log the week
     const wkEntry = { weekStart:weekData?.week||weekKey(), modeId:profile.modeId, focusLane:strategy?.focusLane||"", done:(weekData?.tasks||[]).filter(t=>t.done).length, total:(weekData?.tasks||[]).length, review:reviewAnswers };
     const newWH = [...weekHistory, wkEntry];
-    setWeekHistory(newWH); await db.set(email,"weekHistory",newWH);
+    setWeekHistory(newWH); await sbSet(email,"weekHistory",newWH);
     // Apply new mode
     const updated = { ...profile, modeId:newModeId, answers:newAnswers||profile.answers };
     const newH = [...history, { date:new Date().toISOString(), modeId:newModeId }];
     const newW = { week:weekKey(), tasks:[] };
-    await saveProfile(updated); await saveHistory(newH); await db.set(email,"week",newW); setWeekData(newW);
+    await saveProfile(updated); await saveHistory(newH); await sbSet(email,"week",newW); setWeekData(newW);
     setShowWeeklyReview(false); setStratKey(k=>k+1);
   };
 
