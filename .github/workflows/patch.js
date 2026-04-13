@@ -153,6 +153,12 @@ patch('Pulse isYou check',
 // ── DASHBOARD: loading state ──
 patch('Dashboard loading state',
   '<TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>',
+  `{stratLoading && tasks.length === 0
+          ? <div style={{ padding:"20px 18px", textAlign:"center" }}><p style={{ fontSize:13, color:T.muted, fontStyle:"italic" }}>Generating your strategy...</p></div>
+          : <TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>}`
+);
+
+  '<TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>',
   '{stratLoading && tasks.length === 0 ? (<div style={{ padding:"20px 18px", textAlign:"center" }}><p style={{ fontSize:13, color:T.muted, fontStyle:"italic" }}>Generating your strategy...</p></div>) : (<TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>)}'
 );
 
