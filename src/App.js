@@ -2316,6 +2316,15 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      try {
+        const raw = localStorage.getItem("mos_last_email");
+        if (raw) {
+          const lastEmail = JSON.parse(raw);
+          const key = "mos_"+lastEmail.toLowerCase().replace(/[^a-z0-9]/g,"_")+"_profile";
+          const rawProfile = localStorage.getItem(key);
+          if (rawProfile) { await loadUserData(lastEmail); return; }
+        }
+      } catch {}
       setAppState("intro");
     })();
   }, []);
