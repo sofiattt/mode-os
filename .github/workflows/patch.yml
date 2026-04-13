@@ -10,21 +10,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
-      - name: Restore and fix
+      - name: Fix onboard email
         run: |
-          git log --oneline -15
-          GOOD=9a2649a
-          echo "Restoring from $GOOD"
-          git checkout $GOOD -- src/App.js
-          sed -i 's/db\.set(activeEmail,/sbSet(activeEmail,/g' src/App.js
-          sed -i 's/db\.get(activeEmail,/sbGet(activeEmail,/g' src/App.js
-          sed -i 's/localStorage\.setItem("mos_last_email", JSON\.stringify(activeEmail))/localStorage.setItem("mos_session_email", activeEmail)/g' src/App.js
+          sed -i 's/const onboard = async data => {/const onboard = async data => {\n    const boardEmail = email || (()=>{try{return localStorage.getItem("mos_session_email");}catch{return null;}})();/' src/App.js
+          sed -i 's/if (email) {/if (boardEmail) {/' src/App.js
+          sed -i 's/await sbSet(email, "profile", p);/await sbSet(boardEmail, "profile", p);/' src/App.js
+          sed -i 's/await sbSet(email, "history", h);/await sbSet(boardEmail, "history", h);/' src/App.js
+          sed -i 's/await sbSet(email, "week", w);/await sbSet(boardEmail, "week", w);/' src/App.js
+          sed -i 's/setEmail(email);/setEmail(boardEmail);/' src/App.js
           echo "Done"
       - name: Commit
         run: |
           git config user.email "patch@modeos.io"
           git config user.name "Mode OS Patch"
           git add src/App.js
-          git diff --cached --quiet || git commit -m "restore: clean App.js with db.set fix"
+          git diff --cached --quiet || git commit -m "fix: onboard email null"
           git push
