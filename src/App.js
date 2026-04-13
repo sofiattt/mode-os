@@ -274,17 +274,25 @@ async function sbGet(email, k) {
 async function sbSet(email, k, v) {
   if (!SB_URL || !SB_KEY) return;
   try {
-    await fetch(`${SB_URL}/rest/v1/user_data`, {
+    const res = await fetch(`${SB_URL}/rest/v1/user_data`, {
       method: "POST",
       headers: {
         "apikey": SB_KEY,
         "Authorization": `Bearer ${SB_KEY}`,
         "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
       },
       body: JSON.stringify({ email, key: k, value: v, updated_at: new Date().toISOString() }),
     });
-  } catch {}
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("sbSet failed:", res.status, err);
+      document.title = `SB ERR ${res.status}`;
+    }
+  } catch (e) {
+    console.error("sbSet exception", e);
+    document.title = "SB EXCEPTION";
+  }
 }
 
 // db — localStorage first (always reliable), Supabase REST for cross-device sync
@@ -2315,18 +2323,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const raw = localStorage.getItem("mos_last_email");
-        if (raw) {
-          const lastEmail = JSON.parse(raw);
-          const key = "mos_"+lastEmail.toLowerCase().replace(/[^a-z0-9]/g,"_")+"_profile";
-          const rawProfile = localStorage.getItem(key);
-          if (rawProfile) { await loadUserData(lastEmail); return; }
-        }
-      } catch {}
-      setAppState("intro");
-    })();
+    // Always show intro/login — user must sign in every session
+    // SoftLogin pre-fills saved email for convenience
+    setAppState("intro");
   }, []);
 
   const loadUserData = async (e) => {
@@ -2451,14 +2450,6 @@ export default function App() {
 
   return (
     <div style={{fontFamily:"'DM Sans',sans-serif",background:"#F5F2ED",minHeight:"100vh",color:"#0F0C0A"}}>
-
-{/* TEMP DEBUG - remove after */}
-<div style={{background:"red",color:"white",padding:"8px",fontSize:"11px",wordBreak:"break-all"}}>
-  URL: {process.env.REACT_APP_SUPABASE_URL ? process.env.REACT_APP_SUPABASE_URL.slice(0,30) : "MISSING"}
-  {" | "}
-  KEY: {process.env.REACT_APP_SUPABASE_KEY ? "OK" : "MISSING"}
-</div>
-
       {tab==="dashboard" && <Dashboard profile={profile} strategy={strategy} stratLoading={stratLoading} weekData={weekData} onUpdateWeek={saveWeek} onSwitch={()=>setShowSwitch(true)} onEdit={()=>setEditing(true)} onCheckIn={()=>setShowCheckIn(true)} onFocusStyleChange={()=>setShowFocusStyle(true)} patterns={patterns}/>}
       {tab==="today"     && <DailyView  profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onCapture={()=>setTab("capture")}/>}
       {tab==="week"      && <ThisWeek   profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onReview={()=>setShowWeeklyReview(true)}/>}
