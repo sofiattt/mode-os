@@ -1204,7 +1204,7 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
             <p style={{ fontSize:13, color:T.muted, fontStyle:"italic" }}>Generating your strategy...</p>
           </div>
         ) : (
-          <TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>
+          {stratLoading && tasks.length === 0 ? (<div style={{ padding:"20px 18px", textAlign:"center" }}><p style={{ fontSize:13, color:T.muted, fontStyle:"italic" }}>Generating your strategy...</p></div>) : (<TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>)}
         )}
         {isLight && tasks.length>0 && (
           <div style={{ padding:"10px 16px", borderTop:`1px solid ${T.border}` }}>
