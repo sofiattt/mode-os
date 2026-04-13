@@ -287,11 +287,14 @@ async function sbSet(email, k, v) {
     if (!res.ok) {
       const err = await res.text();
       console.error("sbSet failed:", res.status, err);
-      document.title = `SB ERR ${res.status}`;
+      // Show visible error in app
+      window.__sbErr = `Write failed: ${res.status} — ${err.slice(0,80)}`;
+      window.dispatchEvent(new Event("sberror"));
     }
   } catch (e) {
     console.error("sbSet exception", e);
-    document.title = "SB EXCEPTION";
+    window.__sbErr = `Write exception: ${e.message}`;
+    window.dispatchEvent(new Event("sberror"));
   }
 }
 
@@ -981,12 +984,14 @@ function Wizard({ init={}, onDone, onCancel }) {
   const [s, setS] = useState(1);
   const [name, setName] = useState(init.name||"");
   const [title, setTitle] = useState(init.title||"");
+  const [skills, setSkills] = useState((init.skills||[]).join(", "));
   const [selLanes, setSelLanes] = useState(init.lanes||[]);
   const [customLanes, setCustomLanes] = useState(init.customLanes||[]);
   const [customIn, setCustomIn] = useState("");
   const [answers, setAnswers] = useState({});
+  const [focusStyle, setFocusStyle] = useState(init.focusStyle||"deep");
   const isEdit = !!init.name;
-  const TOTAL = isEdit ? 2 : 3;
+  const TOTAL = isEdit ? 2 : 5;
   const pg = { fontFamily:"'DM Sans',sans-serif", background:T.bg, minHeight:"100vh", color:T.ink, padding:"48px 24px 100px", maxWidth:480, margin:"0 auto" };
 
   const addCustomLane = () => { const label=customIn.trim(); if(!label)return; const id="cx_"+Date.now(); setCustomLanes(p=>[...p,{id,label,emoji:"◈"}]); setSelLanes(p=>[...p,id]); setCustomIn(""); };
@@ -994,19 +999,21 @@ function Wizard({ init={}, onDone, onCancel }) {
   const toggleLane = id => setSelLanes(p=>p.includes(id)?p.filter(l=>l!==id):[...p,id]);
   const allAnswered = Object.keys(answers).length===QS.length;
   const computed = allAnswered ? calcMode(Object.entries(answers).map(([qId,optIdx])=>({qId,optIdx:Number(optIdx)}))) : null;
+  const parsedSkills = skills.split(",").map(s=>s.trim()).filter(Boolean);
 
   // Step 1 — Who are you
   if(s===1) return (
     <div style={pg}><StepBar n={1} total={TOTAL}/><SL ch={`Step 1 of ${TOTAL}`}/>
       <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:40, fontWeight:300, marginBottom:6 }}>Who are you?</h2>
-      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Your name and how you describe what you do.</p>
+      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Your name, how you describe what you do, and your core skills.</p>
       <div style={{ marginBottom:18 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Name</p><input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Sofía" style={INP}/></div>
-      <div style={{ marginBottom:40 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Identity</p><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Brand Strategist / Creative Director / Founder" style={INP}/><p style={{ fontSize:11, color:T.muted, marginTop:7 }}>Separate with  /  — embrace the slash</p></div>
+      <div style={{ marginBottom:18 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Identity</p><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Brand Strategist / Creative Director / Founder" style={INP}/><p style={{ fontSize:11, color:T.muted, marginTop:7 }}>Separate with  /  — embrace the slash</p></div>
+      <div style={{ marginBottom:40 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Core Skills</p><input value={skills} onChange={e=>setSkills(e.target.value)} placeholder="e.g. Brand Strategy, Motion Design, Copywriting" style={INP}/><p style={{ fontSize:11, color:T.muted, marginTop:7 }}>Separate with commas — these shape your weekly tasks</p></div>
       <div style={{ display:"flex", gap:10 }}>{onCancel&&<Btn variant="ghost" onClick={onCancel}>Cancel</Btn>}<div style={{ flex:1 }}><Btn onClick={()=>setS(2)} disabled={!name.trim()} full>Continue →</Btn></div></div>
     </div>
   );
 
-  // Step 2 — Lanes (or done if editing)
+  // Step 2 — Lanes
   if(s===2) return (
     <div style={pg}><StepBar n={2} total={TOTAL}/><SL ch={`Step 2 of ${TOTAL}`}/>
       <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:40, fontWeight:300, marginBottom:6 }}>Your lanes</h2>
@@ -1027,15 +1034,15 @@ function Wizard({ init={}, onDone, onCancel }) {
       <div style={{ display:"flex", gap:10 }}>
         <Btn variant="ghost" onClick={()=>setS(1)}>← Back</Btn>
         <div style={{ flex:1 }}>
-          <Btn onClick={()=>{ if(isEdit) onDone({name,title,skills:init.skills||[],lanes:selLanes,customLanes}); else setS(3); }} disabled={selLanes.length===0} full>{isEdit?"Save →":"Continue →"}</Btn>
+          <Btn onClick={()=>{ if(isEdit) onDone({name,title,skills:parsedSkills,lanes:selLanes,customLanes}); else setS(3); }} disabled={selLanes.length===0} full>{isEdit?"Save →":"Continue →"}</Btn>
         </div>
       </div>
     </div>
   );
 
   // Step 3 — Mode questions (new users only)
-  return (
-    <div style={{...pg, paddingBottom:100}}><StepBar n={3} total={3}/><SL ch="Step 3 of 3 — Find Your Mode"/>
+  if(s===3) return (
+    <div style={{...pg, paddingBottom:100}}><StepBar n={3} total={5}/><SL ch="Step 3 of 5 — Find Your Mode"/>
       <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:38, fontWeight:300, marginBottom:6 }}>Be honest.</h2>
       <p style={{ fontSize:14, color:T.sub, marginBottom:36, lineHeight:1.8 }}>7 questions. The more honest, the sharper your result.</p>
       {QS.map((q,qi)=>(
@@ -1053,7 +1060,57 @@ function Wizard({ init={}, onDone, onCancel }) {
       <div style={{ display:"flex", gap:10 }}>
         <Btn variant="ghost" onClick={()=>setS(2)}>← Back</Btn>
         <div style={{ flex:1 }}>
-          <Btn onClick={()=>onDone({name,title,skills:[],lanes:selLanes,customLanes,answers,modeId:computed||"build",focusStyle:"deep"})} disabled={!allAnswered} full>Enter Mode OS →</Btn>
+          <Btn onClick={()=>setS(4)} disabled={!allAnswered} full>Continue →</Btn>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Step 4 — Focus Style
+  if(s===4) return (
+    <div style={pg}><StepBar n={4} total={5}/><SL ch="Step 4 of 5 — How You Work"/>
+      <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:38, fontWeight:300, marginBottom:6 }}>How do you work best?</h2>
+      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>This shapes how your weekly tasks are structured.</p>
+      <div style={{ display:"flex", flexDirection:"column", gap:12, marginBottom:36 }}>
+        {[
+          {id:"deep", label:"◆ Deep Focus", sub:"30–90 min sessions", detail:"Strategic, structured tasks. Best when you can block long focused windows."},
+          {id:"light", label:"◇ Light Focus", sub:"10–15 min bursts", detail:"Small, momentum-based tasks. Best when starting feels hard. Includes a ▶ Start timer."},
+        ].map(opt=>{ const sel=focusStyle===opt.id; return (
+          <div key={opt.id} onClick={()=>setFocusStyle(opt.id)} style={{ background:sel?T.tint:"#fff", border:`2px solid ${sel?T.tintBorder:T.border}`, borderRadius:12, padding:"18px 20px", cursor:"pointer", transition:"all 0.15s", boxShadow:sel?T.shMd:T.sh }}>
+            <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:24, fontWeight:400, color:sel?T.inkWarm:T.ink, marginBottom:3 }}>{opt.label}</p>
+            <p style={{ fontSize:13, color:sel?T.inkSoft:T.muted, marginBottom:6 }}>{opt.sub}</p>
+            <p style={{ fontSize:12, color:sel?T.sub:T.muted, lineHeight:1.6 }}>{opt.detail}</p>
+          </div>
+        ); })}
+      </div>
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn variant="ghost" onClick={()=>setS(3)}>← Back</Btn>
+        <div style={{ flex:1 }}><Btn onClick={()=>setS(5)} full>Continue →</Btn></div>
+      </div>
+    </div>
+  );
+
+  // Step 5 — Confirm
+  const finalMode = computed || "build";
+  return (
+    <div style={pg}><StepBar n={5} total={5}/><SL ch="Step 5 of 5 — Ready"/>
+      <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:38, fontWeight:300, marginBottom:6 }}>You're ready.</h2>
+      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Here's your starting profile. You can change anything later.</p>
+      <div style={{ background:"#fff", border:`1.5px solid ${T.border}`, borderRadius:14, padding:"20px 22px", marginBottom:24, boxShadow:T.shMd }}>
+        <p style={{ fontSize:13, color:T.sub, marginBottom:4 }}><strong style={{ color:T.ink }}>{name}</strong> · {title||"Multi-passionate creative"}</p>
+        {parsedSkills.length>0&&<p style={{ fontSize:12, color:T.muted, marginBottom:8 }}>{parsedSkills.join(" · ")}</p>}
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:12 }}>
+          {selLanes.map(id=>{const l=getLane(id,customLanes);return<span key={id} style={{ fontSize:11, color:T.inkWarm, background:T.tint, border:`1px solid ${T.tintBorder}`, padding:"3px 10px", borderRadius:20 }}>{l.emoji} {l.label}</span>;})}
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          {computed&&<span style={{ fontSize:11, color:MODES[computed].moodColor, background:MODES[computed].moodBg, border:`1px solid ${MODES[computed].moodBorder}`, padding:"3px 10px", borderRadius:20 }}>{MODES[computed].emoji} {MODES[computed].label}</span>}
+          <span style={{ fontSize:11, color:T.inkSoft, background:T.tint, border:`1px solid ${T.tintBorder}`, padding:"3px 10px", borderRadius:20 }}>{focusStyle==="deep"?"◆ Deep Focus":"◇ Light Focus"}</span>
+        </div>
+      </div>
+      <div style={{ display:"flex", gap:10 }}>
+        <Btn variant="ghost" onClick={()=>setS(4)}>← Back</Btn>
+        <div style={{ flex:1 }}>
+          <Btn onClick={()=>onDone({name,title,skills:parsedSkills,lanes:selLanes,customLanes,answers,modeId:finalMode,focusStyle})} full>Enter Mode OS →</Btn>
         </div>
       </div>
     </div>
@@ -2313,8 +2370,13 @@ export default function App() {
   const [showWeeklyReview, setShowWeeklyReview] = useState(false);
   const [editing, setEditing] = useState(false);
 
+  const [sbError, setSbError] = useState("");
+
   useEffect(() => {
-    const link=document.createElement("link"); link.rel="stylesheet";
+    const handler = () => { setSbError(window.__sbErr||"Write failed"); setTimeout(()=>setSbError(""),6000); };
+    window.addEventListener("sberror", handler);
+    return () => window.removeEventListener("sberror", handler);
+  }, []);
     link.href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap";
     document.head.appendChild(link);
     const s=document.createElement("style");
@@ -2323,23 +2385,41 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // Always show intro/login — user must sign in every session
-    // SoftLogin pre-fills saved email for convenience
+    // Always show login — but pre-load email for convenience
     setAppState("intro");
   }, []);
 
   const loadUserData = async (e) => {
     try {
-      // Check if Supabase has profile — if not, migrate from localStorage first
-      const sbProfile = await sbGet(e, "profile");
-      if (!sbProfile) {
-        await db.migrate(e);
+      // 1. Try Supabase first
+      let p = await sbGet(e, "profile");
+      if (!p) {
+        // 2. Fall back to localStorage
+        try {
+          const lsKey = "mos_"+e.toLowerCase().replace(/[^a-z0-9]/g,"_")+"_profile";
+          const raw = localStorage.getItem(lsKey);
+          if (raw) p = JSON.parse(raw);
+        } catch {}
+        // 3. If found locally, migrate to Supabase now (writes should work post-GRANT)
+        if (p) await db.migrate(e);
       }
-      const p=await db.get(e,"profile"), h=await db.get(e,"history"), w=await db.get(e,"week"), wh=await db.get(e,"weekHistory");
+      const h = await db.get(e,"history");
+      const w = await db.get(e,"week");
+      const wh = await db.get(e,"weekHistory");
       setEmail(e);
-      if(p){ setProfile(p); setHistory(h||[]); setWeekData(w||null); setWeekHistory(wh||[]); setAppState("app"); }
-      else setAppState("onboarding");
-    } catch { setEmail(e); setAppState("onboarding"); }
+      if (p) {
+        setProfile(p);
+        setHistory(h||[]);
+        setWeekData(w||null);
+        setWeekHistory(wh||[]);
+        setAppState("app");
+      } else {
+        setAppState("onboarding");
+      }
+    } catch {
+      setEmail(e);
+      setAppState("onboarding");
+    }
   };
 
   const handleLogin = async (e) => {
@@ -2450,6 +2530,11 @@ export default function App() {
 
   return (
     <div style={{fontFamily:"'DM Sans',sans-serif",background:"#F5F2ED",minHeight:"100vh",color:"#0F0C0A"}}>
+      {sbError && (
+        <div style={{position:"fixed",bottom:80,left:16,right:16,background:"#C04040",color:"#fff",padding:"12px 16px",borderRadius:8,fontSize:12,zIndex:500,lineHeight:1.5}}>
+          ⚠ Supabase: {sbError}
+        </div>
+      )}
       {tab==="dashboard" && <Dashboard profile={profile} strategy={strategy} stratLoading={stratLoading} weekData={weekData} onUpdateWeek={saveWeek} onSwitch={()=>setShowSwitch(true)} onEdit={()=>setEditing(true)} onCheckIn={()=>setShowCheckIn(true)} onFocusStyleChange={()=>setShowFocusStyle(true)} patterns={patterns}/>}
       {tab==="today"     && <DailyView  profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onCapture={()=>setTab("capture")}/>}
       {tab==="week"      && <ThisWeek   profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onReview={()=>setShowWeeklyReview(true)}/>}
