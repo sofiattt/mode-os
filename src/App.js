@@ -2420,6 +2420,7 @@ export default function App() {
   };
 
   const onboard = async data => {
+    const boardEmail = email || (()=>{try{return localStorage.getItem("mos_session_email");}catch{return null;}})();
     const safeMode = data.modeId || calcMode(
       Object.entries(data.answers||{}).map(([qId,optIdx])=>({qId,optIdx:Number(optIdx)}))
     ) || "build";
@@ -2432,10 +2433,10 @@ export default function App() {
     };
     const h = [{ date: new Date().toISOString(), modeId: safeMode }];
     const w = { week: weekKey(), tasks: [] };
-    if (email) {
-      await sbSet(email, "profile", p);
-      await sbSet(email, "history", h);
-      await sbSet(email, "week", w);
+    if (boardEmail) {
+      await sbSet(boardEmail, "profile", p);
+      await sbSet(boardEmail, "history", h);
+      await sbSet(boardEmail, "week", w);
     }
     setProfile(p);
     setHistory(h);
