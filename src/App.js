@@ -252,59 +252,50 @@ function calcModeScores(answers) {
   return scores;
 }
 
-// ─── SUPABASE REST API ────────────────────────────────────────────────────────
-const SB_URL = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_URL) || "";
-const SB_KEY = ((typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_KEY) || "").replace(/\s/g, "");
+// ─── UPSTASH REDIS ────────────────────────────────────────────────────────────
+const UP_URL = ((typeof process !== "undefined" && process.env?.REACT_APP_UPSTASH_URL) || "").replace(/\s/g, "");
+const UP_TOKEN = ((typeof process !== "undefined" && process.env?.REACT_APP_UPSTASH_TOKEN) || "").replace(/\s/g, "");
 
-async function sbGet(email, k) {
-  if (!SB_URL || !SB_KEY) return null;
+async function upCmd(cmd) {
+  if (!UP_URL || !UP_TOKEN) return null;
   try {
-    const res = await fetch(
-      `${SB_URL}/rest/v1/user_data?email=eq.${encodeURIComponent(email)}&key=eq.${encodeURIComponent(k)}&select=value&limit=1`,
-      { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` } }
-    );
+    const res = await fetch(UP_URL, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${UP_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify(cmd),
+    });
     if (!res.ok) return null;
-    const rows = await res.json();
-    return rows?.[0]?.value ?? null;
+    const data = await res.json();
+    return data.result ?? null;
   } catch { return null; }
 }
 
-async function sbSet(email, k, v) {
-  if (!SB_URL || !SB_KEY) return;
-  try {
-    const res = await fetch(`${SB_URL}/rest/v1/user_data`, {
-      method: "POST",
-      headers: {
-        "apikey": SB_KEY,
-        "Authorization": `Bearer ${SB_KEY}`,
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates,return=minimal",
-      },
-      body: JSON.stringify({ email, key: k, value: v, updated_at: new Date().toISOString() }),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      window.__sbErr = `Write failed: ${res.status} — ${err.slice(0,80)}`;
-      window.dispatchEvent(new Event("sberror"));
-    }
-  } catch (e) {
-    window.__sbErr = `Write exception: ${e.message}`;
-    window.dispatchEvent(new Event("sberror"));
+async function dbGet(email, k) {
+  const result = await upCmd(["GET", `user:${email}:${k}`]);
+  if (result === null || result === undefined) return null;
+  try { return JSON.parse(result); } catch { return result; }
+}
+
+async function dbSet(email, k, v) {
+  if (!UP_URL || !UP_TOKEN) return;
+  const result = await upCmd(["SET", `user:${email}:${k}`, JSON.stringify(v)]);
+  if (result !== "OK") {
+    window.__dbErr = `Write failed for ${k}: ${result}`;
+    window.dispatchEvent(new Event("dberror"));
   }
 }
 
-// Fetch all pulse posts for a given week (across all users)
-async function sbGetFeed(wk) {
-  if (!SB_URL || !SB_KEY) return [];
-  try {
-    const res = await fetch(
-      `${SB_URL}/rest/v1/user_data?key=eq.${encodeURIComponent("pulse_"+wk)}&select=value&order=updated_at.desc`,
-      { headers: { "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` } }
-    );
-    if (!res.ok) return [];
-    const rows = await res.json();
-    return rows.map(r => r.value).filter(Boolean);
-  } catch { return []; }
+async function getPulseFeed(wk) {
+  const result = await upCmd(["GET", `pulse:${wk}`]);
+  if (!result) return [];
+  try { return JSON.parse(result); } catch { return []; }
+}
+
+async function addPulsePost(wk, entry) {
+  const current = await getPulseFeed(wk);
+  const filtered = current.filter(e => e.email !== entry.email);
+  filtered.unshift(entry);
+  await upCmd(["SET", `pulse:${wk}`, JSON.stringify(filtered)]);
 }
 
 
@@ -604,8 +595,9 @@ function TimerCard({ seconds, label, onDone, onClose }) {
 }
 
 function SoftLogin({ onLogin }) {
+  const savedEmail = (() => { try { return localStorage.getItem("mos_session_email")||""; } catch { return ""; } })();
   const [step, setStep] = useState("email");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(savedEmail);
   const [password, setPassword] = useState("");
   const [isNew, setIsNew] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -621,17 +613,20 @@ function SoftLogin({ onLogin }) {
     const e = email.trim().toLowerCase();
     if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
     setLoading(true); setError("");
+
     try {
-      const stored = await sbGet(e, "__password__");
+      // Check if password exists in Supabase for this email
+      const stored = await dbGet(e, "__password__");
       if (!stored) {
-        await sbSet(e, "__password__", password);
+        await dbSet(e, "__password__", password);
         setIsNew(true);
       } else if (stored !== password) {
         setError("Wrong password. Try again."); setLoading(false); return;
       }
     } catch {
-      setError("Connection error. Check your internet and try again."); setLoading(false); return;
+      setError("Connection error. Check your internet."); setLoading(false); return;
     }
+    localStorage.setItem("mos_session_email", e);
     setDone(true); setLoading(false);
     onLogin(e);
   };
@@ -664,8 +659,8 @@ function SoftLogin({ onLogin }) {
 
         {step === "email" ? (
           <>
-            <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>Your email.</h2>
-            <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Sign in or create a free account. Your data syncs across all devices.</p>
+            <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>{savedEmail ? "Welcome back." : "Your email."}</h2>
+            <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>{savedEmail ? "Sign in to pick up where you left off — your profile, tasks, and history." : "Create a free account to save your profile and access it from any device."}</p>
             <input value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleEmailNext()} placeholder="your@email.com" type="email" autoCapitalize="none" autoComplete="email" style={{ ...INP, marginBottom:12, fontSize:16 }}/>
             <button type="button" onClick={handleEmailNext} disabled={!email.includes("@")} style={btnStyle(!email.includes("@"))}>Continue &#8594;</button>
             <p style={{ fontSize:11, color:T.muted, textAlign:"center", marginTop:6 }}>Your data syncs across all your devices.</p>
@@ -675,9 +670,14 @@ function SoftLogin({ onLogin }) {
             <button type="button" onClick={()=>{setStep("email");setError("");}} style={{ background:"transparent", border:"none", fontSize:12, color:T.muted, cursor:"pointer", marginBottom:20, fontFamily:"'DM Sans',sans-serif", touchAction:"manipulation" }}>&#8592; {email}</button>
             <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:34, fontWeight:300, color:T.ink, marginBottom:8, lineHeight:1.2 }}>{isNew ? "Create a password." : "Enter your password."}</h2>
             <p style={{ fontSize:14, color:T.sub, marginBottom:20, lineHeight:1.8 }}>{isNew ? "Secures your profile so you can access it anywhere." : "Your profile, tasks, and history will load across all devices."}</p>
+            {!isNew && savedEmail === email.trim().toLowerCase() && (
+              <div style={{ background:T.tint, border:`1px solid ${T.tintBorder}`, borderRadius:8, padding:"11px 14px", marginBottom:16 }}>
+                <p style={{ fontSize:12, color:T.inkWarm, lineHeight:1.6 }}>Your existing data on this device will sync to your account automatically.</p>
+              </div>
+            )}
             <input value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleAuth()} placeholder={isNew?"Create a password (min 6 chars)":"Your password"} type="password" autoComplete={isNew?"new-password":"current-password"} style={{ ...INP, marginBottom:error?8:12, fontSize:16 }}/>
             {error && <p style={{ fontSize:12, color:"#C04040", marginBottom:12, lineHeight:1.5 }}>{error}</p>}
-            <button type="button" onClick={handleAuth} disabled={loading||password.length<6} style={btnStyle(loading||password.length<6)}>{loading?(isNew?"Creating account...":"Signing in..."):(isNew?"Create Account →":"Sign In →")}</button>
+            <button type="button" onClick={handleAuth} disabled={loading||password.length<6} style={btnStyle(loading||password.length<6)}>{loading?(isNew?"Creating account...":"Signing in..."):(isNew?"Create Account &#8594;":"Sign In &#8594;")}</button>
             <button type="button" onClick={()=>{setIsNew(!isNew);setError("");}} style={{ width:"100%", background:"transparent", border:`1px solid ${T.border}`, borderRadius:4, padding:"13px 24px", fontSize:11, letterSpacing:"1.2px", textTransform:"uppercase", color:T.sub, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", minHeight:50, touchAction:"manipulation" }}>{isNew?"Already have an account? Sign in":"New here? Create an account"}</button>
           </>
         )}
@@ -944,14 +944,12 @@ function Wizard({ init={}, onDone, onCancel }) {
   const [s, setS] = useState(1);
   const [name, setName] = useState(init.name||"");
   const [title, setTitle] = useState(init.title||"");
-  const [skills, setSkills] = useState((init.skills||[]).join(", "));
   const [selLanes, setSelLanes] = useState(init.lanes||[]);
   const [customLanes, setCustomLanes] = useState(init.customLanes||[]);
   const [customIn, setCustomIn] = useState("");
   const [answers, setAnswers] = useState({});
-  const [focusStyle, setFocusStyle] = useState(init.focusStyle||"deep");
   const isEdit = !!init.name;
-  const TOTAL = isEdit ? 2 : 5;
+  const TOTAL = isEdit ? 2 : 3;
   const pg = { fontFamily:"'DM Sans',sans-serif", background:T.bg, minHeight:"100vh", color:T.ink, padding:"48px 24px 100px", maxWidth:480, margin:"0 auto" };
 
   const addCustomLane = () => { const label=customIn.trim(); if(!label)return; const id="cx_"+Date.now(); setCustomLanes(p=>[...p,{id,label,emoji:"◈"}]); setSelLanes(p=>[...p,id]); setCustomIn(""); };
@@ -959,21 +957,19 @@ function Wizard({ init={}, onDone, onCancel }) {
   const toggleLane = id => setSelLanes(p=>p.includes(id)?p.filter(l=>l!==id):[...p,id]);
   const allAnswered = Object.keys(answers).length===QS.length;
   const computed = allAnswered ? calcMode(Object.entries(answers).map(([qId,optIdx])=>({qId,optIdx:Number(optIdx)}))) : null;
-  const parsedSkills = skills.split(",").map(s=>s.trim()).filter(Boolean);
 
   // Step 1 — Who are you
   if(s===1) return (
     <div style={pg}><StepBar n={1} total={TOTAL}/><SL ch={`Step 1 of ${TOTAL}`}/>
       <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:40, fontWeight:300, marginBottom:6 }}>Who are you?</h2>
-      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Your name, how you describe what you do, and your core skills.</p>
+      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Your name and how you describe what you do.</p>
       <div style={{ marginBottom:18 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Name</p><input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Sofía" style={INP}/></div>
-      <div style={{ marginBottom:18 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Identity</p><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Brand Strategist / Creative Director / Founder" style={INP}/><p style={{ fontSize:11, color:T.muted, marginTop:7 }}>Separate with  /  — embrace the slash</p></div>
-      <div style={{ marginBottom:40 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Core Skills</p><input value={skills} onChange={e=>setSkills(e.target.value)} placeholder="e.g. Brand Strategy, Motion Design, Copywriting" style={INP}/><p style={{ fontSize:11, color:T.muted, marginTop:7 }}>Separate with commas — these shape your weekly tasks</p></div>
+      <div style={{ marginBottom:40 }}><p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:8 }}>Identity</p><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Brand Strategist / Creative Director / Founder" style={INP}/><p style={{ fontSize:11, color:T.muted, marginTop:7 }}>Separate with  /  — embrace the slash</p></div>
       <div style={{ display:"flex", gap:10 }}>{onCancel&&<Btn variant="ghost" onClick={onCancel}>Cancel</Btn>}<div style={{ flex:1 }}><Btn onClick={()=>setS(2)} disabled={!name.trim()} full>Continue →</Btn></div></div>
     </div>
   );
 
-  // Step 2 — Lanes
+  // Step 2 — Lanes (or done if editing)
   if(s===2) return (
     <div style={pg}><StepBar n={2} total={TOTAL}/><SL ch={`Step 2 of ${TOTAL}`}/>
       <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:40, fontWeight:300, marginBottom:6 }}>Your lanes</h2>
@@ -994,15 +990,15 @@ function Wizard({ init={}, onDone, onCancel }) {
       <div style={{ display:"flex", gap:10 }}>
         <Btn variant="ghost" onClick={()=>setS(1)}>← Back</Btn>
         <div style={{ flex:1 }}>
-          <Btn onClick={()=>{ if(isEdit) onDone({name,title,skills:parsedSkills,lanes:selLanes,customLanes}); else setS(3); }} disabled={selLanes.length===0} full>{isEdit?"Save →":"Continue →"}</Btn>
+          <Btn onClick={()=>{ if(isEdit) onDone({name,title,skills:init.skills||[],lanes:selLanes,customLanes}); else setS(3); }} disabled={selLanes.length===0} full>{isEdit?"Save →":"Continue →"}</Btn>
         </div>
       </div>
     </div>
   );
 
   // Step 3 — Mode questions (new users only)
-  if(s===3) return (
-    <div style={{...pg, paddingBottom:100}}><StepBar n={3} total={5}/><SL ch="Step 3 of 5 — Find Your Mode"/>
+  return (
+    <div style={{...pg, paddingBottom:100}}><StepBar n={3} total={3}/><SL ch="Step 3 of 3 — Find Your Mode"/>
       <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:38, fontWeight:300, marginBottom:6 }}>Be honest.</h2>
       <p style={{ fontSize:14, color:T.sub, marginBottom:36, lineHeight:1.8 }}>7 questions. The more honest, the sharper your result.</p>
       {QS.map((q,qi)=>(
@@ -1020,57 +1016,7 @@ function Wizard({ init={}, onDone, onCancel }) {
       <div style={{ display:"flex", gap:10 }}>
         <Btn variant="ghost" onClick={()=>setS(2)}>← Back</Btn>
         <div style={{ flex:1 }}>
-          <Btn onClick={()=>setS(4)} disabled={!allAnswered} full>Continue →</Btn>
-        </div>
-      </div>
-    </div>
-  );
-
-  // Step 4 — Focus Style
-  if(s===4) return (
-    <div style={pg}><StepBar n={4} total={5}/><SL ch="Step 4 of 5 — How You Work"/>
-      <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:38, fontWeight:300, marginBottom:6 }}>How do you work best?</h2>
-      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>This shapes how your weekly tasks are structured.</p>
-      <div style={{ display:"flex", flexDirection:"column", gap:12, marginBottom:36 }}>
-        {[
-          {id:"deep", label:"◆ Deep Focus", sub:"30–90 min sessions", detail:"Strategic, structured tasks. Best when you can block long focused windows."},
-          {id:"light", label:"◇ Light Focus", sub:"10–15 min bursts", detail:"Small, momentum-based tasks. Best when starting feels hard. Includes a ▶ Start timer."},
-        ].map(opt=>{ const sel=focusStyle===opt.id; return (
-          <div key={opt.id} onClick={()=>setFocusStyle(opt.id)} style={{ background:sel?T.tint:"#fff", border:`2px solid ${sel?T.tintBorder:T.border}`, borderRadius:12, padding:"18px 20px", cursor:"pointer", transition:"all 0.15s", boxShadow:sel?T.shMd:T.sh }}>
-            <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:24, fontWeight:400, color:sel?T.inkWarm:T.ink, marginBottom:3 }}>{opt.label}</p>
-            <p style={{ fontSize:13, color:sel?T.inkSoft:T.muted, marginBottom:6 }}>{opt.sub}</p>
-            <p style={{ fontSize:12, color:sel?T.sub:T.muted, lineHeight:1.6 }}>{opt.detail}</p>
-          </div>
-        ); })}
-      </div>
-      <div style={{ display:"flex", gap:10 }}>
-        <Btn variant="ghost" onClick={()=>setS(3)}>← Back</Btn>
-        <div style={{ flex:1 }}><Btn onClick={()=>setS(5)} full>Continue →</Btn></div>
-      </div>
-    </div>
-  );
-
-  // Step 5 — Confirm
-  const finalMode = computed || "build";
-  return (
-    <div style={pg}><StepBar n={5} total={5}/><SL ch="Step 5 of 5 — Ready"/>
-      <h2 style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:38, fontWeight:300, marginBottom:6 }}>You're ready.</h2>
-      <p style={{ fontSize:14, color:T.sub, marginBottom:32, lineHeight:1.8 }}>Here's your starting profile. You can change anything later.</p>
-      <div style={{ background:"#fff", border:`1.5px solid ${T.border}`, borderRadius:14, padding:"20px 22px", marginBottom:24, boxShadow:T.shMd }}>
-        <p style={{ fontSize:13, color:T.sub, marginBottom:4 }}><strong style={{ color:T.ink }}>{name}</strong> · {title||"Multi-passionate creative"}</p>
-        {parsedSkills.length>0&&<p style={{ fontSize:12, color:T.muted, marginBottom:8 }}>{parsedSkills.join(" · ")}</p>}
-        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:12 }}>
-          {selLanes.map(id=>{const l=getLane(id,customLanes);return<span key={id} style={{ fontSize:11, color:T.inkWarm, background:T.tint, border:`1px solid ${T.tintBorder}`, padding:"3px 10px", borderRadius:20 }}>{l.emoji} {l.label}</span>;})}
-        </div>
-        <div style={{ display:"flex", gap:8 }}>
-          {computed&&<span style={{ fontSize:11, color:MODES[computed].moodColor, background:MODES[computed].moodBg, border:`1px solid ${MODES[computed].moodBorder}`, padding:"3px 10px", borderRadius:20 }}>{MODES[computed].emoji} {MODES[computed].label}</span>}
-          <span style={{ fontSize:11, color:T.inkSoft, background:T.tint, border:`1px solid ${T.tintBorder}`, padding:"3px 10px", borderRadius:20 }}>{focusStyle==="deep"?"◆ Deep Focus":"◇ Light Focus"}</span>
-        </div>
-      </div>
-      <div style={{ display:"flex", gap:10 }}>
-        <Btn variant="ghost" onClick={()=>setS(4)}>← Back</Btn>
-        <div style={{ flex:1 }}>
-          <Btn onClick={()=>onDone({name,title,skills:parsedSkills,lanes:selLanes,customLanes,answers,modeId:finalMode,focusStyle})} full>Enter Mode OS →</Btn>
+          <Btn onClick={()=>onDone({name,title,skills:[],lanes:selLanes,customLanes,answers,modeId:computed||"build",focusStyle:"deep"})} disabled={!allAnswered} full>Enter Mode OS →</Btn>
         </div>
       </div>
     </div>
@@ -1143,7 +1089,11 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
       {/* 3. FOCUS LANE — decision made */}
       <div style={{ margin:"10px 20px 0", background:"#fff", border:`2px solid ${T.tintBorder}`, borderRadius:12, padding:"16px 18px", boxShadow:T.shMd }}>
         <p style={{ fontSize:9, letterSpacing:3, color:T.inkWarm, textTransform:"uppercase", marginBottom:10, fontWeight:700 }}>→ Focus Lane This Week</p>
-        {(() => {
+        {stratLoading && !strategy ? (
+          <div style={{ padding:"10px 0" }}>
+            <p style={{ fontSize:13, color:T.muted, fontStyle:"italic" }}>Generating your focus lane...</p>
+          </div>
+        ) : (() => {
           const focusName = strategy?.focusLane || localFocusLane(profile, profile.modeId)?.label;
           if (!focusName) return (
             <div style={{ background:T.tint, borderRadius:8, padding:"10px 14px" }}>
@@ -1171,20 +1121,22 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
       </div>
 
       {/* 4. STOP DOING */}
-      <div style={{ margin:"10px 20px 0", background:"#FFF5F5", border:`1.5px solid #F0C0C0`, borderRadius:10, padding:"13px 16px", display:"flex", gap:12 }}>
-        <div style={{ width:3, minHeight:32, background:"#C04040", borderRadius:2, flexShrink:0 }}/>
-        <div>
-          <p style={{ fontSize:9, letterSpacing:2, color:"#C04040", textTransform:"uppercase", marginBottom:4, fontWeight:700 }}>Stop Doing This Week</p>
-          <p style={{ fontSize:13, color:"#3A1010", fontWeight:600, lineHeight:1.6 }}>{strategy?.stopDoing||mode.stop}</p>
+      {(strategy?.stopDoing || !stratLoading) && (
+        <div style={{ margin:"10px 20px 0", background:"#FFF5F5", border:`1.5px solid #F0C0C0`, borderRadius:10, padding:"13px 16px", display:"flex", gap:12 }}>
+          <div style={{ width:3, minHeight:32, background:"#C04040", borderRadius:2, flexShrink:0 }}/>
+          <div>
+            <p style={{ fontSize:9, letterSpacing:2, color:"#C04040", textTransform:"uppercase", marginBottom:4, fontWeight:700 }}>Stop Doing This Week</p>
+            <p style={{ fontSize:13, color:"#3A1010", fontWeight:600, lineHeight:1.6 }}>{strategy?.stopDoing||mode.stop}</p>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 5. THIS WEEK TASKS */}
       <div style={{ margin:"10px 20px 0", background:"#fff", border:`1.5px solid ${T.border}`, borderRadius:14, overflow:"hidden", boxShadow:T.shMd }}>
         <div style={{ padding:"14px 18px 12px", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <div style={{ flex:1 }}>
             <p style={{ fontSize:9, letterSpacing:3, color:T.inkSoft, textTransform:"uppercase", marginBottom:6 }}>This Week</p>
-            {tasks.length>0 && !stratLoading && (
+            {tasks.length>0 && (
               <>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
                   <p style={{ fontSize:14, color:done===tasks.length?"#2A7A4A":T.ink, fontWeight:600 }}>
@@ -1199,13 +1151,7 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
             )}
           </div>
         </div>
-        {stratLoading && tasks.length === 0 ? (
-          <div style={{ padding:"20px 18px", textAlign:"center" }}>
-            <p style={{ fontSize:13, color:T.muted, fontStyle:"italic" }}>Generating your strategy...</p>
-          </div>
-        ) : (
-          <TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>
-        )}
+        <TaskList tasks={tasks} isLight={isLight} onToggle={toggleTask} onNote={noteTask} onTimer={(i,t)=>setTimer({idx:i,seconds:parseMin(t.time)*60,label:t.action})} compact/>
         {isLight && tasks.length>0 && (
           <div style={{ padding:"10px 16px", borderTop:`1px solid ${T.border}` }}>
             <button onClick={()=>onUpdateWeek({...weekData,tasks:tasks.map(t=>({...t,done:false}))})} style={{ fontSize:10, color:T.muted, background:"transparent", border:"none", cursor:"pointer", fontFamily:"'DM Sans',sans-serif", letterSpacing:"1px", textTransform:"uppercase" }}>↺ Start Fresh Today</button>
@@ -1285,7 +1231,7 @@ function Dashboard({ profile, strategy, stratLoading, weekData, onUpdateWeek, on
   );
 }
 
-function ThisWeek({ profile, weekData, onUpdateWeek, strategy, stratLoading, onReview }) {
+function ThisWeek({ profile, weekData, onUpdateWeek, strategy, onReview }) {
   const mode = MODES[profile.modeId]||MODES.build;
   const isLight = profile.focusStyle==="light";
   const tasks = weekData?.tasks||[];
@@ -1550,20 +1496,21 @@ function Share({ profile, strategy, weekData }) {
 }
 
 // ─── PULSE — Community Mode Feed ─────────────────────────────────────────────
-function Pulse({ profile, strategy, email }) {
+function Pulse({ profile, strategy }) {
   const mode = MODES[profile.modeId]||MODES.build;
-  const [step, setStep] = useState("idle");
+  const [step, setStep] = useState("idle"); // idle | compose | posted
   const [customText, setCustomText] = useState("");
   const [feed, setFeed] = useState([]);
   const [modeCounts, setModeCounts] = useState({});
-  const [feedLoading, setFeedLoading] = useState(true);
   const aiSuggestion = strategy?.shareCallout || mode.callouts[0];
   const focusLane = strategy?.focusLane || localFocusLane(profile, profile.modeId)?.label || "";
+
   const wk = weekKey();
+  const [feedLoading, setFeedLoading] = useState(true);
 
   const loadFeed = async () => {
     setFeedLoading(true);
-    const posts = await sbGetFeed(wk);
+    const posts = await getPulseFeed(wk);
     posts.sort((a,b) => (b.ts||0) - (a.ts||0));
     setFeed(posts);
     const counts = {};
@@ -1572,29 +1519,29 @@ function Pulse({ profile, strategy, email }) {
     setFeedLoading(false);
   };
 
-  useEffect(() => { loadFeed(); }, []);
+  useEffect(() => { loadFeed(); }, []); // eslint-disable-line
 
-  const hasPostedThisWeek = feed.some(e => e.email === profile.email && e.week === wk);
+  const userEmail = profile.email || "";
+  const hasPostedThisWeek = feed.some(e => e.email === userEmail && e.week === wk);
 
   const submitPost = async (text) => {
     if (!text.trim()) return;
-    const now = new Date();
     const entry = {
-      email: profile.email,
+      email: userEmail,
       name: profile.name,
       mode: profile.modeId,
       lane: focusLane,
       callout: text.trim(),
       ts: Date.now(),
       week: wk,
-      postedAt: now.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" }),
+      postedAt: new Date().toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"}),
     };
-    await sbSet(profile.email, `pulse_${wk}`, entry);
+    await addPulsePost(wk, entry);
     setStep("posted");
-    loadFeed();
+    await loadFeed();
   };
 
-  const myPost = feed.find(e => e.email === profile.email && e.week === wk);
+  const myPost = feed.find(e => e.email === userEmail && e.week === wk);
   const sortedModes = Object.entries(modeCounts).sort((a,b)=>b[1]-a[1]);
 
   return (
@@ -1682,17 +1629,13 @@ function Pulse({ profile, strategy, email }) {
       )}
 
       {/* Feed */}
-      {feedLoading ? (
-        <div style={{ textAlign:"center", padding:"32px 20px" }}>
-          <p style={{ fontSize:13, color:T.muted }}>Loading this week's pulse...</p>
-        </div>
-      ) : feed.length > 0 ? (
+      {feed.length > 0 ? (
         <>
           <p style={{ fontSize:9, letterSpacing:2, color:T.muted, textTransform:"uppercase", marginBottom:12 }}>Declarations this week</p>
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
             {feed.map((entry, i) => {
               const m = MODES[entry.mode]||MODES.build;
-              const isYou = entry.email === profile.email;
+              const isYou = entry.email === userEmail;
               return (
                 <div key={i} style={{ background: isYou ? T.tint : "#fff", border:`1.5px solid ${isYou ? T.tintBorder : T.border}`, borderRadius:10, padding:"14px 16px", boxShadow:T.sh }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
@@ -1711,6 +1654,10 @@ function Pulse({ profile, strategy, email }) {
             })}
           </div>
         </>
+      ) : feedLoading ? (
+        <div style={{ textAlign:"center", padding:"32px 20px" }}>
+          <p style={{ fontSize:13, color:T.muted }}>Loading this week's pulse...</p>
+        </div>
       ) : (
         <div style={{ textAlign:"center", padding:"40px 20px", background:"#fff", border:`1px solid ${T.border}`, borderRadius:12 }}>
           <p style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, fontWeight:300, color:T.ink, marginBottom:8 }}>Be the first this week.</p>
@@ -2331,38 +2278,33 @@ export default function App() {
   const [strategy, setStrategy] = useState(null);
   const [stratLoading, setStratLoading] = useState(false);
   const [stratKey, setStratKey] = useState(0);
+  const [dbError, setDbError] = useState("");
+
+  useEffect(() => {
+    const handler = () => { setDbError(window.__dbErr||"Write failed"); setTimeout(()=>setDbError(""),6000); };
+    window.addEventListener("dberror", handler);
+    return () => window.removeEventListener("dberror", handler);
+  }, []);
   const [showSwitch, setShowSwitch] = useState(false);
   const [showCheckIn, setShowCheckIn] = useState(false);
   const [showFocusStyle, setShowFocusStyle] = useState(false);
   const [showWeeklyReview, setShowWeeklyReview] = useState(false);
   const [editing, setEditing] = useState(false);
 
-  const [sbError, setSbError] = useState("");
-
   useEffect(() => {
-    const handler = () => { setSbError(window.__sbErr||"Write failed"); setTimeout(()=>setSbError(""),6000); };
-    window.addEventListener("sberror", handler);
-    return () => window.removeEventListener("sberror", handler);
-  }, []);
-
-  useEffect(() => {
-    // Fonts
-    const preconnect1 = document.createElement("link"); preconnect1.rel="preconnect"; preconnect1.href="https://fonts.googleapis.com"; document.head.appendChild(preconnect1);
-    const preconnect2 = document.createElement("link"); preconnect2.rel="preconnect"; preconnect2.href="https://fonts.gstatic.com"; preconnect2.crossOrigin="anonymous"; document.head.appendChild(preconnect2);
-    const link = document.createElement("link"); link.rel="stylesheet";
+    const link=document.createElement("link"); link.rel="stylesheet";
     link.href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap";
     document.head.appendChild(link);
-    const s = document.createElement("style");
-    s.textContent=`*{box-sizing:border-box;margin:0;padding:0;}body{background:#F5F2ED;}input:focus{outline:none;}textarea:focus{outline:none;}`;
+    const s=document.createElement("style");
+    s.textContent=`*{box-sizing:border-box;margin:0;padding:0;}body{background:#F5F2ED;}input:focus{outline:none;}`;
     document.head.appendChild(s);
   }, []);
 
   useEffect(() => {
-    // Always show login — but pre-load email for convenience
     (async () => {
       try {
-        const savedEmail = localStorage.getItem("mos_session_email");
-        if (savedEmail) { await loadUserData(savedEmail); return; }
+        const saved = localStorage.getItem("mos_session_email");
+        if (saved) { await loadUserData(saved); return; }
       } catch {}
       setAppState("intro");
     })();
@@ -2370,10 +2312,10 @@ export default function App() {
 
   const loadUserData = async (e) => {
     try {
-      const p = await sbGet(e, "profile");
-      const h = await sbGet(e, "history");
-      const w = await sbGet(e, "week");
-      const wh = await sbGet(e, "weekHistory");
+      const p = await dbGet(e, "profile");
+      const h = await dbGet(e, "history");
+      const w = await dbGet(e, "week");
+      const wh = await dbGet(e, "weekHistory");
       setEmail(e);
       if (p) {
         setProfile({...p, email: e});
@@ -2384,25 +2326,20 @@ export default function App() {
       } else {
         setAppState("onboarding");
       }
-    } catch {
-      setEmail(e);
-      setAppState("onboarding");
-    }
+    } catch { setEmail(e); setAppState("onboarding"); }
   };
 
   const handleLogin = async (e) => {
-    try {
-      localStorage.setItem("mos_session_email", e);
-      await loadUserData(e);
-    } catch { setEmail(e); setAppState("onboarding"); }
+    localStorage.setItem("mos_session_email", e);
+    try { await loadUserData(e); } catch { setEmail(e); setAppState("onboarding"); }
   };
 
   useEffect(() => {
     if(!weekData||!profile||!email) return;
     if(weekData.week!==weekKey()){
       const oldEntry={ weekStart:weekData.week, modeId:profile.modeId, focusLane:strategy?.focusLane||"", done:(weekData.tasks||[]).filter(t=>t.done).length, total:(weekData.tasks||[]).length };
-      const newWH=[...weekHistory,oldEntry]; setWeekHistory(newWH); sbSet(email,"weekHistory",newWH);
-      const reset={ week:weekKey(), tasks:[] }; setWeekData(reset); sbSet(email,"week",reset); setStratKey(k=>k+1);
+      const newWH=[...weekHistory,oldEntry]; setWeekHistory(newWH); dbSet(email,"weekHistory",newWH);
+      const reset={ week:weekKey(), tasks:[] }; setWeekData(reset); dbSet(email,"week",reset); setStratKey(k=>k+1);
     }
   }, [weekData]);
 
@@ -2412,15 +2349,14 @@ export default function App() {
     fetchStrategy(profile, profile.modeId||"build", analysePatterns(history, weekHistory, profile.modeId||"build")).then(r=>{setStrategy(r);setStratLoading(false);}).catch(()=>setStratLoading(false));
   }, [stratKey]);
 
-  const saveProfile=async p=>{await sbSet(email,"profile",p);setProfile({...p,email});};
-  const saveHistory=async h=>{await sbSet(email,"history",h);setHistory(h);};
+  const saveProfile=async p=>{const pw={...p,email};await dbSet(email,"profile",pw);setProfile(pw);};
+  const saveHistory=async h=>{await dbSet(email,"history",h);setHistory(h);};
   const saveWeek=async w=>{
     const resolved = typeof w === "function" ? w(weekData) : w;
-    await sbSet(email,"week",resolved); setWeekData(resolved);
+    await dbSet(email,"week",resolved); setWeekData(resolved);
   };
 
   const onboard = async data => {
-    const boardEmail = email || (()=>{try{return localStorage.getItem("mos_session_email");}catch{return null;}})();
     const safeMode = data.modeId || calcMode(
       Object.entries(data.answers||{}).map(([qId,optIdx])=>({qId,optIdx:Number(optIdx)}))
     ) || "build";
@@ -2429,14 +2365,17 @@ export default function App() {
       lanes: data.lanes||[], customLanes: data.customLanes||[],
       activeLanes: data.lanes||[], modeId: safeMode,
       answers: data.answers||{}, focusStyle: data.focusStyle||"deep",
-      email,
     };
     const h = [{ date: new Date().toISOString(), modeId: safeMode }];
     const w = { week: weekKey(), tasks: [] };
-    if (boardEmail) {
-      await sbSet(boardEmail, "profile", p);
-      await sbSet(boardEmail, "history", h);
-      await sbSet(boardEmail, "week", w);
+    const activeEmail = email || localStorage.getItem("mos_session_email") || null;
+    if (activeEmail) {
+      localStorage.setItem("mos_session_email", activeEmail);
+      setEmail(activeEmail);
+      const pWithEmail = {...p, email: activeEmail};
+      await dbSet(activeEmail, "profile", pWithEmail);
+      await dbSet(activeEmail, "history", h);
+      await dbSet(activeEmail, "week", w);
     }
     setProfile(p);
     setHistory(h);
@@ -2449,7 +2388,7 @@ export default function App() {
     const updated={...profile,modeId,answers};
     const newH=[...history,{date:new Date().toISOString(),modeId}];
     const newW={week:weekKey(),tasks:[]};
-    await saveProfile(updated); await saveHistory(newH); await sbSet(email,"week",newW); setWeekData(newW);
+    await saveProfile(updated); await saveHistory(newH); await dbSet(email,"week",newW); setWeekData(newW);
     setShowSwitch(false); setStratKey(k=>k+1);
   };
 
@@ -2457,13 +2396,13 @@ export default function App() {
     const updated={...profile,focusStyle:style};
     await saveProfile(updated);
     // Reset tasks so fallback + AI can re-seed for new style
-    const newW={week:weekKey(),tasks:[]}; await sbSet(email,"week",newW); setWeekData(newW);
+    const newW={week:weekKey(),tasks:[]}; await dbSet(email,"week",newW); setWeekData(newW);
     setShowFocusStyle(false); setStratKey(k=>k+1);
   };
 
   const checkInStay=async()=>{
     const wkEntry={ weekStart:weekData?.week||weekKey(), modeId:profile.modeId, focusLane:strategy?.focusLane||"", done:(weekData?.tasks||[]).filter(t=>t.done).length, total:(weekData?.tasks||[]).length };
-    const newWH=[...weekHistory,wkEntry]; setWeekHistory(newWH); await sbSet(email,"weekHistory",newWH);
+    const newWH=[...weekHistory,wkEntry]; setWeekHistory(newWH); await dbSet(email,"weekHistory",newWH);
     setShowCheckIn(false); setStratKey(k=>k+1);
   };
 
@@ -2476,12 +2415,12 @@ export default function App() {
     // Log the week
     const wkEntry = { weekStart:weekData?.week||weekKey(), modeId:profile.modeId, focusLane:strategy?.focusLane||"", done:(weekData?.tasks||[]).filter(t=>t.done).length, total:(weekData?.tasks||[]).length, review:reviewAnswers };
     const newWH = [...weekHistory, wkEntry];
-    setWeekHistory(newWH); await sbSet(email,"weekHistory",newWH);
+    setWeekHistory(newWH); await dbSet(email,"weekHistory",newWH);
     // Apply new mode
     const updated = { ...profile, modeId:newModeId, answers:newAnswers||profile.answers };
     const newH = [...history, { date:new Date().toISOString(), modeId:newModeId }];
     const newW = { week:weekKey(), tasks:[] };
-    await saveProfile(updated); await saveHistory(newH); await sbSet(email,"week",newW); setWeekData(newW);
+    await saveProfile(updated); await saveHistory(newH); await dbSet(email,"week",newW); setWeekData(newW);
     setShowWeeklyReview(false); setStratKey(k=>k+1);
   };
 
@@ -2495,16 +2434,16 @@ export default function App() {
 
   return (
     <div style={{fontFamily:"'DM Sans',sans-serif",background:"#F5F2ED",minHeight:"100vh",color:"#0F0C0A"}}>
-      {sbError && (
-        <div style={{position:"fixed",bottom:80,left:16,right:16,background:"#C04040",color:"#fff",padding:"12px 16px",borderRadius:8,fontSize:12,zIndex:500,lineHeight:1.5}}>
-          ⚠ Supabase: {sbError}
+      {dbError && (
+        <div style={{position:"fixed",bottom:80,left:16,right:16,background:"#C04040",color:"#fff",padding:"12px 16px",borderRadius:8,fontSize:12,zIndex:500,lineHeight:1.5,boxShadow:"0 4px 12px rgba(0,0,0,0.3)"}}>
+          ⚠ {dbError}
         </div>
       )}
       {tab==="dashboard" && <Dashboard profile={profile} strategy={strategy} stratLoading={stratLoading} weekData={weekData} onUpdateWeek={saveWeek} onSwitch={()=>setShowSwitch(true)} onEdit={()=>setEditing(true)} onCheckIn={()=>setShowCheckIn(true)} onFocusStyleChange={()=>setShowFocusStyle(true)} patterns={patterns}/>}
       {tab==="today"     && <DailyView  profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onCapture={()=>setTab("capture")}/>}
-      {tab==="week"      && <ThisWeek   profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} stratLoading={stratLoading} onReview={()=>setShowWeeklyReview(true)}/>}
+      {tab==="week"      && <ThisWeek   profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onReview={()=>setShowWeeklyReview(true)}/>}
       {tab==="history"   && <History    history={history} weekHistory={weekHistory} weekData={weekData}/>}
-      {tab==="pulse"     && <Pulse      profile={profile} strategy={strategy} email={email}/>}
+      {tab==="pulse"     && <Pulse      profile={profile} strategy={strategy}/>}
       {tab==="focus"     && <WeeklyFocus profile={profile} weekData={weekData} onUpdateWeek={saveWeek} strategy={strategy} onCapture={()=>setTab("capture")}/>}
       {tab==="capture"   && <Capture    profile={profile} weekData={weekData} onUpdateWeek={saveWeek} onAddToPriority={()=>setTab("focus")}/>}
       {tab==="share"     && <Share      profile={profile} strategy={strategy} weekData={weekData}/>}
