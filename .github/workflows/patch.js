@@ -1,41 +1,46 @@
 const fs = require('fs');
+let c = fs.readFileSync('src/App.js', 'utf8');
+let count = 0;
 
-// Fetch the clean working version from the last good commit
-const { execSync } = require('child_process');
-
-// Get the commit hash of the last working build (9a2649a = Update patch.js, before the broken ones)
-// We need to find the commit just before the syntax errors started
-const log = execSync('git log --oneline -10').toString();
-console.log('Recent commits:\n' + log);
-
-// Find the last commit that said "fix: session, pulse, task flash"
-const lines = log.split('\n');
-let targetHash = null;
-for (const line of lines) {
-  if (line.includes('fix: session, pulse, task flash')) {
-    targetHash = line.split(' ')[0];
-    break;
+function patch(desc, oldStr, newStr) {
+  if (c.includes(newStr.slice(0, 50))) {
+    console.log('already: ' + desc);
+    return;
+  }
+  if (c.includes(oldStr)) {
+    c = c.replace(oldStr, newStr);
+    count++;
+    console.log('applied: ' + desc);
+  } else {
+    console.log('missing: ' + desc);
   }
 }
 
-if (targetHash) {
-  console.log('Restoring App.js from commit: ' + targetHash);
-  const content = execSync('git show ' + targetHash + ':src/App.js').toString();
-  
-  // Apply ONLY the safe single-line fixes
-  let c = content;
-  
-  // Fix onboard db.set → sbSet
-  c = c.replaceAll('db.set(activeEmail,', 'sbSet(activeEmail,');
-  c = c.replaceAll('db.get(activeEmail,', 'sbGet(activeEmail,');
-  c = c.replace(
-    'try { localStorage.setItem("mos_last_email", JSON.stringify(activeEmail)); } catch {}',
-    'localStorage.setItem("mos_session_email", activeEmail);'
+// Fix 1: Strip whitespace from SB_KEY so line breaks don't break auth
+patch('SB_KEY whitespace fix',
+  'const SB_KEY = (typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_KEY) || "";',
+  'const SB_KEY = ((typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_KEY) || "").replace(/\\s/g, "");'
+);
+
+// Fix 2: Session persistence - stay logged in on refresh
+patch('session persistence',
+  'setAppState("intro");\n  }, []);',
+  '(async()=>{\n      try{\n        const sv=localStorage.getItem("mos_session_email");\n        if(sv){await loadUserData(sv);return;}\n      }catch{}\n      setAppState("intro");\n    })();\n  }, []);'
+);
+
+// Fix 3: Save email on login
+patch('save email on login',
+  'try { await loadUserData(e); } catch { setEmail(e); setAppState("onboarding"); }',
+  'try{localStorage.setItem("mos_session_email",e);await loadUserData(e);}catch{setEmail(e);setAppState("onboarding");}'
+);
+
+// Fix 4: Save email on onboard
+if (!c.includes('localStorage.setItem("mos_session_email"')) {
+  patch('save email on onboard',
+    'await sbSet(email, "profile", p);',
+    'localStorage.setItem("mos_session_email",email||"");\n      await sbSet(email, "profile", p);'
   );
-  
-  fs.writeFileSync('src/App.js', c);
-  console.log('Done — restored and patched');
-} else {
-  console.log('Could not find target commit, logging all commits:');
-  console.log(execSync('git log --oneline -20').toString());
 }
+
+fs.writeFileSync('src/App.js', c);
+console.log('done — ' + count + ' patches applied');
