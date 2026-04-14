@@ -269,9 +269,6 @@ async function sbGet(email, k) {
   } catch { return null; }
 }
 
-const SB_URL = ((typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_URL) || "").replace(/\s/g, "");
-const SB_KEY = ((typeof process !== "undefined" && process.env?.REACT_APP_SUPABASE_KEY) || "").replace(/\s/g, "");
-
 async function sbSet(email, k, v) {
   if (!SB_URL || !SB_KEY) return;
   try {
