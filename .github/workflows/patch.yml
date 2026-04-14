@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Fix key whitespace
+      - name: Apply patches
         run: |
           node .github/workflows/patch.js
           echo "Done"
